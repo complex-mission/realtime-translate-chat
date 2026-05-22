@@ -1,0 +1,186 @@
+/* PhotoSwipe 自定义样式 - 与聊天应用风格统一 */
+
+/* 按钮基础样式 - 默认无背景 */
+.pswp__button {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  opacity: 0.85;
+  transition: all 0.2s ease;
+}
+
+.pswp__button:hover {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 1;
+}
+
+.pswp__button:active {
+  transform: scale(0.95);
+  opacity: 0.9;
+}
+
+/* 图标样式 - 更细的线条 */
+.pswp__icn {
+  top: 10px;
+  left: 10px;
+  width: 24px;
+  height: 24px;
+}
+
+.pswp__icn-shadow {
+  stroke-width: 1.5px;
+  stroke: rgba(255, 255, 255, 0.8);
+}
+
+/* 关闭按钮 */
+.pswp__button--close {
+  margin-right: 8px;
+  margin-top: 8px;
+}
+
+/* 箭头按钮 */
+.pswp__button--arrow {
+  width: 48px;
+  height: 48px;
+  margin-top: -24px;
+  border-radius: 50%;
+}
+
+.pswp__button--arrow .pswp__icn {
+  top: 12px;
+  left: 12px;
+  width: 24px;
+  height: 24px;
+}
+
+.pswp__button--arrow--prev {
+  left: 12px;
+}
+
+.pswp__button--arrow--next {
+  right: 12px;
+}
+
+.pswp__button--arrow--next .pswp__icn {
+  right: 12px;
+  left: auto;
+}
+
+/* 缩放按钮 */
+.pswp__button--zoom {
+  display: block;
+}
+
+/* 下载按钮 */
+.pswp__button--download {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  margin: 0;
+  margin-left: auto;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  opacity: 0.85;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pswp__button--download:hover {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 1;
+}
+
+.pswp__button--download:active {
+  transform: scale(0.95);
+}
+
+/* 顶部栏样式 */
+.pswp__top-bar {
+  height: 56px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.4), transparent);
+}
+
+/* 计数器样式 */
+.pswp__counter {
+  height: 32px;
+  margin: 0 12px 0 4px;
+  font-size: 13px;
+  line-height: 32px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: none;
+}
+
+/* 预加载器 */
+.pswp__preloader {
+  width: 44px;
+  height: 44px;
+  margin-right: 0;
+  margin-left: 0;
+}
+
+.pswp__preloader .pswp__icn {
+  top: 10px;
+  left: 10px;
+  width: 24px;
+  height: 24px;
+}
+
+/* 隐藏默认的 zoom 按钮的内部图标，使用自定义的 */
+.pswp__button--zoom .pswp__icn {
+  display: none;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .pswp__button {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+  }
+
+  .pswp__icn {
+    top: 8px;
+    left: 8px;
+    width: 24px;
+    height: 24px;
+  }
+
+  .pswp__button--arrow {
+    width: 40px;
+    height: 40px;
+    margin-top: -20px;
+  }
+
+  .pswp__button--arrow .pswp__icn {
+    top: 8px;
+    left: 8px;
+  }
+
+  .pswp__button--arrow--prev {
+    left: 8px;
+  }
+
+  .pswp__button--arrow--next {
+    right: 8px;
+  }
+
+  .pswp__top-bar {
+    padding: 4px 6px;
+  }
+}

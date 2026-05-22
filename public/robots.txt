@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+Disallow: /chat/
+Disallow: /profile/
+Disallow: /change-password/
+
+Sitemap: https://meeting.example.com/sitemap.xml
