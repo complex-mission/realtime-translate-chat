@@ -6,9 +6,31 @@ import { generateInviteCode } from '@/lib/utils'
 export async function GET(req: NextRequest) {
   const u = await getUser(req); if(!u) return errResponse('AUTH_TOKEN_INVALID')
   const sql = u.role==='admin'
-    ? 'SELECT r.*,(SELECT COUNT(*) FROM room_members WHERE room_id=r.id) as member_count FROM rooms r ORDER BY r.created_at DESC'
-    : 'SELECT r.*,(SELECT COUNT(*) FROM room_members WHERE room_id=r.id) as member_count FROM rooms r INNER JOIN room_members rm ON r.id=rm.room_id WHERE rm.user_id=? ORDER BY r.created_at DESC'
-  return okResponse(await query(sql, u.role==='admin'?[]:[u.id]))
+    ? `SELECT r.*,
+        (SELECT COUNT(*) FROM room_members WHERE room_id=r.id) as member_count,
+        (SELECT IF(msg_type='image','[图片]',content) FROM messages WHERE room_id=r.id AND msg_type!='system' ORDER BY id DESC LIMIT 1) as last_message,
+        (SELECT created_at FROM messages WHERE room_id=r.id AND msg_type!='system' ORDER BY id DESC LIMIT 1) as last_message_time,
+        (SELECT COUNT(*) FROM messages WHERE room_id=r.id AND msg_type!='system') as message_count,
+        (SELECT nickname FROM users WHERE id=(SELECT creator_id FROM rooms WHERE id=r.id)) as creator_nickname
+       FROM rooms r ORDER BY COALESCE((SELECT created_at FROM messages WHERE room_id=r.id ORDER BY id DESC LIMIT 1), r.created_at) DESC`
+    : `SELECT r.*,
+        (SELECT COUNT(*) FROM room_members WHERE room_id=r.id) as member_count,
+        (SELECT IF(msg_type='image','[图片]',content) FROM messages WHERE room_id=r.id AND msg_type!='system' ORDER BY id DESC LIMIT 1) as last_message,
+        (SELECT created_at FROM messages WHERE room_id=r.id AND msg_type!='system' ORDER BY id DESC LIMIT 1) as last_message_time,
+        (SELECT COUNT(*) FROM messages WHERE room_id=r.id AND msg_type!='system') as message_count,
+        (SELECT nickname FROM users WHERE id=(SELECT creator_id FROM rooms WHERE id=r.id)) as creator_nickname
+       FROM rooms r INNER JOIN room_members rm ON r.id=rm.room_id WHERE rm.user_id=?
+       ORDER BY COALESCE((SELECT created_at FROM messages WHERE room_id=r.id ORDER BY id DESC LIMIT 1), r.created_at) DESC`
+  const rooms: any[] = await query(sql, u.role==='admin'?[]:[u.id])
+  // 附上每个房间前5个成员的头像预览
+  await Promise.all(rooms.map(async (room) => {
+    const members = await query(
+      'SELECT u.id as user_id, u.nickname, u.avatar_url FROM room_members rm JOIN users u ON u.id=rm.user_id WHERE rm.room_id=? ORDER BY rm.joined_at ASC LIMIT 5',
+      [room.id]
+    )
+    room.members_preview = members
+  }))
+  return okResponse(rooms)
 }
 export async function POST(req: NextRequest) {
   const u = await getUser(req); if(!u) return errResponse('AUTH_TOKEN_INVALID')

@@ -175,61 +175,127 @@ export default function ChatPage() {
             </button>
           )}
         </div>
-        <div className="p-3 space-y-1.5">
-          {rooms.map(r => (
-            <div key={r.id} onClick={() => enterRoom(r.id)}
-              className="cursor-pointer rounded-xl bg-white p-3.5 transition-all duration-150 hover:shadow-md group"
-              style={{ border: '1px solid var(--border-color)' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#a8c4f5' }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-color)' }}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white" style={{ background: 'var(--blue-primary)' }}>
-                    {r.name?.[0]?.toUpperCase() || '#'}
+        <div className="p-3 space-y-2">
+          {rooms.map(r => {
+            const preview: any[] = r.members_preview || []
+            const overflow = r.member_count > 5 ? r.member_count - 5 : 0
+            const avatarColors = ['#bfdbfe','#ddd6fe','#fce7f3','#d1fae5','#ffe4e6','#e0e7ff','#fef9c3']
+            const textColors   = ['#1d4ed8','#6d28d9','#be185d','#065f46','#be123c','#3730a3','#854d0e']
+
+            return (
+              <div key={r.id} onClick={() => enterRoom(r.id)}
+                className="cursor-pointer rounded-2xl bg-white transition-all duration-150 group"
+                style={{ border: '1px solid var(--border-color)', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLElement
+                  el.style.borderColor = '#93c5fd'
+                  el.style.boxShadow = '0 4px 14px rgba(59,130,246,0.10)'
+                  el.style.transform = 'translateY(-1px)'
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLElement
+                  el.style.borderColor = 'var(--border-color)'
+                  el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)'
+                  el.style.transform = 'translateY(0)'
+                }}
+              >
+                <div className="p-3.5">
+                  {/* 第一行：名称 + 状态 + 未读 */}
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold text-slate-800 text-sm leading-snug truncate flex-1">{r.name}</h3>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {r.status === 'active' ? (
+                        <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-600 px-1.5 py-0.5 rounded-full" style={{ background: '#dcfce7' }}>
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                          活跃
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-medium text-slate-400 px-1.5 py-0.5 rounded-full" style={{ background: '#f1f5f9' }}>已关闭</span>
+                      )}
+                      {r.unread > 0 && (
+                        <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] text-white font-bold">
+                          {r.unread > 99 ? '99+' : r.unread}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <h3 className="font-medium text-slate-800 text-sm leading-snug truncate">{r.name}</h3>
-                    {r.last_message && (
-                      <p className="text-xs text-slate-400 mt-0.5 line-clamp-1">{r.last_message}</p>
+
+                  {/* 第二行：最后消息 + 时间 */}
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="text-xs text-slate-400 flex-1 truncate min-w-0">
+                      {r.last_message
+                        ? <span className={r.last_message === '[图片]' ? 'text-slate-300' : ''}>{r.last_message}</span>
+                        : <span className="italic text-slate-300">暂无消息</span>
+                      }
+                    </p>
+                    {r.last_message_time && (
+                      <span className="text-[10px] text-slate-300 shrink-0">
+                        {new Date(r.last_message_time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 第三行：成员头像堆叠 + 创建信息 + 删除 */}
+                  <div className="mt-2.5 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center">
+                        {preview.map((m: any, i: number) => {
+                          const colorIdx = (m.user_id || i) % avatarColors.length
+                          return (
+                            <div key={m.user_id}
+                              className="h-[26px] w-[26px] rounded-full overflow-hidden shrink-0"
+                              style={{ marginLeft: i === 0 ? 0 : -7, zIndex: preview.length - i }}
+                              title={m.nickname}
+                            >
+                              {m.avatar_url ? (
+                                <SignedImage
+                                  src={m.avatar_url}
+                                  alt={m.nickname}
+                                  className="h-full w-full object-cover"
+                                  fallback={
+                                    <div className="flex h-full w-full items-center justify-center text-[10px] font-bold"
+                                      style={{ background: avatarColors[colorIdx], color: textColors[colorIdx] }}>
+                                      {(m.nickname || '?')[0]}
+                                    </div>
+                                  }
+                                />
+                              ) : (
+                                <div className="flex h-full w-full items-center justify-center text-[10px] font-bold"
+                                  style={{ background: avatarColors[colorIdx], color: textColors[colorIdx] }}>
+                                  {(m.nickname || '?')[0]}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                        {overflow > 0 && (
+                          <div className="h-[26px] w-[26px] rounded-full shrink-0 flex items-center justify-center text-[10px] font-semibold bg-slate-100 text-slate-500"
+                            style={{ marginLeft: -7, zIndex: 0 }}>
+                            +{overflow}
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-xs text-slate-400">{r.member_count} 人</span>
+                      <span className="text-xs text-slate-300">· {r.message_count || 0} 条消息</span>
+                      {r.creator_nickname && (
+                        <span className="text-xs text-slate-300 hidden sm:inline truncate max-w-[80px]">· {r.creator_nickname}</span>
+                      )}
+                    </div>
+                    {user?.role === 'admin' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteRoom(r.id, r.name) }}
+                        disabled={deleting === r.id}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all disabled:opacity-50"
+                        title="删除聊天室"
+                      >
+                        {deleting === r.id ? <IconSpinner size={13} /> : <IconTrash size={13} />}
+                      </button>
                     )}
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1.5 shrink-0">
-                  {r.unread > 0 && (
-                    <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1.5 text-xs text-white font-medium">
-                      {r.unread > 99 ? '99+' : r.unread}
-                    </span>
-                  )}
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    r.status === 'active'
-                      ? 'text-emerald-700'
-                      : 'text-slate-400'
-                  }`} style={r.status === 'active' ? { background: '#d1fae5' } : { background: '#f1f5f9' }}>
-                    {r.status === 'active' ? '活跃' : '已关闭'}
-                  </span>
-                </div>
               </div>
-              <div className="mt-2 flex items-center justify-between">
-                <p className="text-xs text-slate-400">{r.member_count} 名成员</p>
-                <div className="flex items-center gap-2">
-                  {r.last_message_time && (
-                    <p className="text-xs text-slate-300">{new Date(r.last_message_time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</p>
-                  )}
-                  {user?.role === 'admin' && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); deleteRoom(r.id, r.name) }}
-                      disabled={deleting === r.id}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all disabled:opacity-50"
-                      title="删除聊天室"
-                    >
-                      {deleting === r.id ? <IconSpinner size={14} /> : <IconTrash size={14} />}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
+            )
+          })}
           {!rooms.length && (
             <div className="py-16 text-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl mx-auto mb-3" style={{ background: 'var(--blue-light)' }}>

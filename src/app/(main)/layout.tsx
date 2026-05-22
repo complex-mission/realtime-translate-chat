@@ -25,13 +25,15 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
     setAccessToken(token)
 
     const origFetch = window.fetch
+    let redirected = false
     window.fetch = async (...args) => {
       const res = await origFetch(...args)
-      if (res.status === 401) {
+      if (res.status === 401 && !redirected) {
         const url = typeof args[0] === 'string' ? args[0] : args[0] instanceof URL ? args[0].toString() : ''
         if (!url.includes('/auth/login') && !url.includes('/auth/refresh')) {
+          redirected = true
           sessionStorage.clear()
-          router.push('/login')
+          window.location.href = '/login'
         }
       }
       return res
@@ -99,7 +101,9 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               </a>
             ))}
             <div className="my-3" style={{ borderTop: '1px solid var(--sidebar-border)' }} suppressHydrationWarning />
-            <p className="px-3 pb-1.5 text-xs font-medium uppercase tracking-widest" style={{ color: 'var(--sidebar-text-muted)' }} suppressHydrationWarning>管理后台</p>
+            {user?.role === 'admin' && (
+              <p className="px-3 pb-1.5 text-xs font-medium uppercase tracking-widest" style={{ color: 'var(--sidebar-text-muted)' }} suppressHydrationWarning>管理后台</p>
+            )}
             {adminNav.map(({ href, icon: Icon, label }) => (
               <a key={href} href={href} className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-all duration-150 ${
                 pathname.startsWith(href) ? 'font-medium text-white' : ''

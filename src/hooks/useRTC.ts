@@ -6,7 +6,7 @@ interface RTCState {
   publishing: boolean
   localAudioTrack: any | null
   localVideoTrack: any | null
-  remoteUsers: Map<string, { audioTrack: any; videoTrack: any }>
+  remoteUsers: Map<string, { audioTrack: any; videoTrack: any; audioMuted: boolean; videoOff: boolean }>
 }
 
 interface UseRTCOptions {
@@ -46,8 +46,11 @@ export function useRTC(options: UseRTCOptions) {
       }).catch(err => {
         console.error('Failed to load dingrtc:', err)
       })
+
+      navigator.mediaDevices?.addEventListener('devicechange', checkDevices)
     }
     return () => {
+      navigator.mediaDevices?.removeEventListener('devicechange', checkDevices)
       if (audioLevelInterval.current) {
         clearInterval(audioLevelInterval.current)
       }
@@ -122,15 +125,25 @@ export function useRTC(options: UseRTCOptions) {
           await client.subscribe(user.userId, mediaType, auxiliary)
           setState((prev) => {
             const next = new Map(prev.remoteUsers)
-            const existing = next.get(user.userId) || { audioTrack: null, videoTrack: null }
+            const existing = next.get(user.userId) || { audioTrack: null, videoTrack: null, audioMuted: false, videoOff: false }
             existing.videoTrack = auxiliary ? user.auxiliaryTrack : user.videoTrack
+            existing.videoOff = false
             next.set(user.userId, existing)
             return { ...prev, remoteUsers: next }
           })
-        } else if (!mcuAudioSubscribed.current) {
-          mcuAudioSubscribed.current = true
-          const audioTrack = await client.subscribe('mcu', 'audio')
-          audioTrack.play()
+        } else if (mediaType === 'audio') {
+          setState((prev) => {
+            const next = new Map(prev.remoteUsers)
+            const existing = next.get(user.userId) || { audioTrack: null, videoTrack: null, audioMuted: false, videoOff: false }
+            existing.audioMuted = false
+            next.set(user.userId, existing)
+            return { ...prev, remoteUsers: next }
+          })
+          if (!mcuAudioSubscribed.current) {
+            mcuAudioSubscribed.current = true
+            const audioTrack = await client.subscribe('mcu', 'audio')
+            audioTrack.play()
+          }
         }
         options.onUserPublished?.(user.userId, mediaType)
       } catch (err) {
@@ -138,7 +151,30 @@ export function useRTC(options: UseRTCOptions) {
       }
     })
 
+    client.on('user-unpublished', (user: any, mediaType: 'audio' | 'video') => {
+      setState((prev) => {
+        const next = new Map(prev.remoteUsers)
+        const existing = next.get(user.userId)
+        if (!existing) return prev
+        if (mediaType === 'video') {
+          existing.videoTrack = null
+          existing.videoOff = true
+        } else if (mediaType === 'audio') {
+          existing.audioMuted = true
+        }
+        next.set(user.userId, { ...existing })
+        return { ...prev, remoteUsers: next }
+      })
+    })
+
     client.on('user-joined', (user: any) => {
+      setState((prev) => {
+        const next = new Map(prev.remoteUsers)
+        if (!next.has(user.userId)) {
+          next.set(user.userId, { audioTrack: null, videoTrack: null, audioMuted: false, videoOff: false })
+        }
+        return { ...prev, remoteUsers: next }
+      })
       options.onUserJoined?.(user.userId)
     })
 
@@ -174,7 +210,11 @@ export function useRTC(options: UseRTCOptions) {
     let cameraError = false
 
     try {
-      const micTrack = await DingRTC.createMicrophoneAudioTrack()
+      const micTrack = await DingRTC.createMicrophoneAudioTrack({
+        ANS: true,   // 自动降噪
+        AEC: true,   // 回声消除
+        AGC: true,   // 自动增益控制（防止说话声忽大忽小）
+      })
       tracks.push(micTrack)
       localAudioTrackRef.current = micTrack
       setState((prev) => ({ ...prev, localAudioTrack: micTrack }))

@@ -5,17 +5,39 @@ import { IconSpinner } from '@/components/ui/icon'
 export default function AdminRoomsPage() {
   const [rooms, setRooms] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [togglingId, setTogglingId] = useState<number | null>(null)
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null
 
-  useEffect(() => {
-    (async () => {
-      if (!token) return
-      const r = await fetch('/api/v1/admin/rooms', { headers: { Authorization: 'Bearer ' + token } })
+  const fetchRooms = async () => {
+    if (!token) return
+    const r = await fetch('/api/v1/admin/rooms', { headers: { Authorization: 'Bearer ' + token } })
+    const d = await r.json()
+    if (d.success) setRooms(d.data)
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchRooms() }, [token])
+
+  const toggleStatus = async (roomId: number, currentStatus: string) => {
+    const newStatus = currentStatus === 'active' ? 'closed' : 'active'
+    const action = newStatus === 'closed' ? '关闭' : '开启'
+    if (!confirm(`确定要${action}这个聊天室吗？`)) return
+
+    setTogglingId(roomId)
+    try {
+      const r = await fetch(`/api/v1/admin/rooms/${roomId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ status: newStatus }),
+      })
       const d = await r.json()
-      if (d.success) setRooms(d.data)
-      setLoading(false)
-    })()
-  }, [token])
+      if (d.success) {
+        setRooms(prev => prev.map(r => r.id === roomId ? { ...r, status: newStatus, closed_at: newStatus === 'closed' ? new Date().toISOString() : null } : r))
+      } else {
+        alert(d.error?.message_i18n?.zh || '操作失败')
+      }
+    } catch { alert('网络错误') } finally { setTogglingId(null) }
+  }
 
   if (loading) return (
     <div className="flex h-full items-center justify-center">
@@ -41,6 +63,7 @@ export default function AdminRoomsPage() {
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">状态</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">邀请码</th>
               <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">创建时间</th>
+              <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -58,10 +81,27 @@ export default function AdminRoomsPage() {
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{r.invite_code}</td>
                 <td className="px-4 py-3 text-xs text-slate-400">{new Date(r.created_at).toLocaleString('zh-CN')}</td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => toggleStatus(r.id, r.status)}
+                    disabled={togglingId === r.id}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                      r.status === 'active'
+                        ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                        : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                    }`}
+                  >
+                    {togglingId === r.id ? (
+                      <span className="flex items-center gap-1"><IconSpinner size={12} /> 处理中...</span>
+                    ) : (
+                      r.status === 'active' ? '关闭' : '开启'
+                    )}
+                  </button>
+                </td>
               </tr>
             ))}
             {!rooms.length && (
-              <tr><td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-400">暂无聊天室</td></tr>
+              <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-400">暂无聊天室</td></tr>
             )}
           </tbody>
         </table>

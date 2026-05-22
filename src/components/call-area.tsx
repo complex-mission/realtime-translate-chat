@@ -12,6 +12,8 @@ interface CallParticipant {
 interface RemoteUser {
   audioTrack: any
   videoTrack: any
+  audioMuted: boolean
+  videoOff: boolean
 }
 
 interface CallAreaProps {
@@ -263,6 +265,18 @@ export default function CallArea({
                         </div>
                       </div>
                     )}
+                    <div className="absolute top-2 right-2 flex items-center gap-1">
+                      {remoteUser?.videoOff && (
+                        <span className="rounded-md bg-red-500/80 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
+                          <IconVideoOff size={10} /> 已关闭视频
+                        </span>
+                      )}
+                      {remoteUser?.audioMuted && (
+                        <span className="rounded-md bg-red-500/80 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
+                          <IconMicOff size={10} /> 已静音
+                        </span>
+                      )}
+                    </div>
                     <div className="absolute bottom-2 left-2 flex items-center gap-1.5">
                       <span className="rounded-md bg-black/50 px-2 py-0.5 text-xs text-white">{p.nickname}</span>
                     </div>

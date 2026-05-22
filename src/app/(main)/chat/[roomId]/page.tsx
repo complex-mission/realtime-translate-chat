@@ -430,17 +430,20 @@ export default function RoomPage() {
       wheelToZoom: true,
       // 自定义 UI
       closeTitle: '关闭',
-      zoomTitle: '缩放',
       arrowPrevTitle: '上一张',
       arrowNextTitle: '下一张',
       errorMsg: '图片加载失败',
+      zoomSVG: '<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 32 32" width="32" height="32"><circle cx="14" cy="14" r="8" stroke="white" stroke-width="2" fill="none"/><line x1="20" y1="20" x2="27" y2="27" stroke="white" stroke-width="2" stroke-linecap="round"/><line x1="14" y1="9" x2="14" y2="19" stroke="white" stroke-width="2" stroke-linecap="round" class="pswp__zoom-icn-bar-v"/><line x1="9" y1="14" x2="19" y2="14" stroke="white" stroke-width="2" stroke-linecap="round" class="pswp__zoom-icn-bar-h"/></svg>',
+      arrowPrevSVG: '<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 60 60" width="60" height="60"><path d="M38 15L22 30 38 45" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
+      arrowNextSVG: '<svg aria-hidden="true" class="pswp__icn" viewBox="0 0 60 60" width="60" height="60"><path d="M38 15L22 30 38 45" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>',
     })
 
-    // 添加下载按钮
+    // 添加自定义按钮
     lightbox.on('uiRegister', () => {
+      // 添加下载按钮
       lightbox.pswp.ui.registerElement({
         name: 'download',
-        order: 8,
+        order: 6,
         isButton: true,
         tagName: 'button',
         html: {
@@ -602,25 +605,22 @@ export default function RoomPage() {
       {/* Header */}
       <div className="flex items-center justify-between bg-white px-4 py-3" style={{ borderBottom: '1px solid var(--border-color)', boxShadow: '0 1px 4px rgba(26,115,232,0.05)' }}>
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl text-sm font-bold text-white shrink-0" style={{ background: 'var(--blue-primary)' }}>
-            {room.name?.[0]?.toUpperCase() || '#'}
-          </div>
           <div>
-            <h1 className="text-base font-semibold text-slate-800">{room.name}</h1>
+            <h1 className="text-sm sm:text-base font-semibold text-slate-800 truncate max-w-[150px] sm:max-w-none">{room.name}</h1>
             <p className="text-xs text-slate-400">{room.members?.length || 0} 名成员 · {room.status === 'active' ? '活跃中' : '已关闭'}</p>
           </div>
         </div>
         <div className="flex items-center gap-1.5">
           {!inCall && room.status === 'active' && (
             <button onClick={joinCall} disabled={joiningCall} className="flex items-center gap-1.5 rounded-lg px-3 h-8 text-sm text-white font-medium transition cursor-pointer hover:opacity-90 disabled:opacity-70 disabled:cursor-not-allowed" style={{ background: '#16a34a' }}>
-              {joiningCall ? <><IconSpinner size={15} /> <span>加入中...</span></> : <><IconPhone size={15} /> <span>加入通话</span></>}
+              {joiningCall ? <><IconSpinner size={15} /> <span className="hidden sm:inline">加入中...</span></> : <><IconPhone size={15} /> <span className="hidden sm:inline">加入通话</span></>}
             </button>
           )}
-          <button onClick={genSummary} disabled={summaryLoading} className="flex items-center gap-1.5 rounded-lg px-3 h-8 text-sm text-slate-600 font-medium transition cursor-pointer hover:bg-blue-50 hover:text-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"
+          <button onClick={genSummary} disabled={summaryLoading} className="hidden md:flex items-center gap-1.5 rounded-lg px-3 h-8 text-sm text-slate-600 font-medium transition cursor-pointer hover:bg-blue-50 hover:text-blue-600 disabled:opacity-60 disabled:cursor-not-allowed"
             style={{ border: '1.5px solid var(--border-color)' }}>
             {summaryLoading ? <><IconSpinner size={15} /> <span>生成中...</span></> : <><IconFileText size={15} /> <span>生成纪要</span></>}
           </button>
-          <button onClick={() => setShowSettings(true)} className="flex items-center justify-center rounded-lg px-3 h-8 text-sm text-slate-500 transition cursor-pointer hover:bg-blue-50 hover:text-blue-600"
+          <button onClick={() => setShowSettings(true)} className="hidden md:flex items-center justify-center rounded-lg px-3 h-8 text-sm text-slate-500 transition cursor-pointer hover:bg-blue-50 hover:text-blue-600"
             style={{ border: '1.5px solid var(--border-color)' }}>
             <IconSettings size={15} />
           </button>
@@ -643,7 +643,9 @@ export default function RoomPage() {
       {/* Call area */}
       {inCall && (
         <CallArea
-          participants={room.members || []}
+          participants={(room.members || []).filter((m: any) =>
+            m.user_id === user?.id || rtc.remoteUsers.has(`user_${m.user_id}`)
+          )}
           remoteUsers={rtc.remoteUsers}
           localVideoTrack={rtc.localVideoTrack}
           muted={rtc.muted}
@@ -692,12 +694,12 @@ export default function RoomPage() {
                   <span className="rounded-full px-3 py-1 text-xs text-slate-400 font-medium" style={{ background: 'var(--border-subtle)' }}>{msg.content}</span>
                 ) : (
                   <>
-                    <div className="h-8 w-8 shrink-0 overflow-hidden rounded" style={{ background: isSelf ? '#95EC69' : 'var(--blue-light)' }}>
-                      {msg.sender_avatar ? (
-                        <SignedImage src={msg.sender_avatar} alt="" className="h-full w-full object-cover" onLoad={() => shouldScrollRef.current && scrollToBottom()} />
-                      ) : (
-                        <div className={`flex h-full w-full items-center justify-center text-sm font-semibold ${isSelf ? 'text-green-800' : 'text-[#1a73e8]'}`}>{msg.sender_nickname?.[0] || '?'}</div>
-                      )}
+<div className="h-8 w-8 shrink-0 overflow-hidden rounded" style={{ background: isSelf ? 'var(--blue-light)' : 'var(--blue-light)' }}>
+                        {msg.sender_avatar ? (
+                          <SignedImage src={msg.sender_avatar} alt="" className="h-full w-full object-cover" onLoad={() => shouldScrollRef.current && scrollToBottom()} />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-sm font-semibold text-[#1a73e8]">{msg.sender_nickname?.[0] || '?'}</div>
+                        )}
                     </div>
                     <div className={`max-w-[70%] min-w-0 ${isSelf ? 'text-right' : 'text-left'}`}>
                       <div className={`flex items-baseline gap-2 ${isSelf ? 'flex-row-reverse' : ''}`}>
@@ -715,11 +717,12 @@ export default function RoomPage() {
                       ) : (
                         <div className={`inline-block mt-1 px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words leading-relaxed text-left ${isSelf ? 'bubble-self' : 'bubble-other'}`}>
                           <EmojiText text={msg.content} />
-                        </div>
-                      )}
-                      {translations.has(msg.id) && (
-                        <div className={`mt-1.5 rounded-xl px-3 py-2 text-sm font-medium ${isSelf ? 'bubble-self' : 'bubble-other'}`}>
-                          {translations.get(msg.id)}
+                          {translations.has(msg.id) && (
+                            <>
+                              <hr className="my-2 !border-t !border-slate-300" />
+                              <div className="text-sm">{translations.get(msg.id)}</div>
+                            </>
+                          )}
                         </div>
                       )}
                       {!isSelf && (msg.msg_type === 'text' || msg.msg_type === 'voice_transcript') && !translations.has(msg.id) && (

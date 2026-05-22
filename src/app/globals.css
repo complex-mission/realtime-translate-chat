@@ -33,7 +33,7 @@
   --sidebar-border: #243050;
 
   /* Surfaces */
-  --surface-bg: #f4f7ff;
+  --surface-bg: #f7f9ff;
   --border-color: #dde5f5;
   --border-subtle: #eef2fc;
 }
@@ -62,16 +62,21 @@ body {
   animation: bubble-in 0.2s ease-out;
 }
 
-/* 消息气泡 - 微信/LINE风格 */
+/* 消息气泡 - 蓝色主题风格 */
 .bubble-self {
-  background: #95EC69 !important;
+  background: #1a73e8 !important;
+  color: #ffffff !important;
   border-radius: 4px;
 }
 
+.bubble-self a {
+  color: #ffffff !important;
+  text-decoration: underline;
+}
+
 .bubble-other {
-  background: #ffffff !important;
+  background: #eaeff9 !important;
   border-radius: 4px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
 }
 
 /* 日期分隔符 */

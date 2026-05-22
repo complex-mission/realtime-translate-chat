@@ -418,3 +418,73 @@ div.pswp__img--placeholder,
 .pswp--one-slide .pswp__counter {
   display: none;
 }
+
+/*
+  ── Custom top-bar button overrides ──
+  Unified size, spacing, border-radius & icon color.
+  Icons stay at original 32×32 so <use> SVGs render at their designed size;
+  positioning uses pixel offsets rather than transform-centering.
+*/
+
+.pswp__top-bar {
+  height: auto;
+  padding: 10px 8px;
+  gap: 4px;
+}
+
+.pswp__top-bar .pswp__button {
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.3);
+  opacity: 1;
+  transition: background 0.15s ease;
+}
+
+.pswp__top-bar .pswp__button:hover,
+.pswp__top-bar .pswp__button:active,
+.pswp__top-bar .pswp__button:focus {
+  background: rgba(255, 255, 255, 0.15);
+  opacity: 1;
+}
+
+/* 32px icon centered in 44px button → (44-32)/2 = 6px from each edge */
+.pswp__top-bar .pswp__icn {
+  top: 6px;
+  left: 6px;
+  right: auto;
+  width: 32px;
+  height: 32px;
+}
+
+/* Unify icon colours – all white */
+.pswp__top-bar .pswp__icn {
+  fill: #fff;
+  color: #fff;
+}
+
+.pswp__top-bar .pswp__icn-shadow {
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 1.5px;
+}
+
+.pswp__top-bar .pswp__button--close {
+  margin-right: 0;
+}
+
+/*
+  ── Arrow buttons – pixel-offset horizontal centering ──
+  60px icon in 75px button → (75-60)/2 = 7.5px, round to 8px
+*/
+
+.pswp__button--arrow:not(.pswp__button--arrow--next) .pswp__icn {
+  left: 8px;
+  right: auto;
+}
+
+.pswp__button--arrow--next .pswp__icn {
+  left: auto;
+  right: 8px;
+  transform: scale(-1, 1);
+}

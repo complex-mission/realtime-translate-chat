@@ -65,6 +65,33 @@ export default function RoomSettingsModal({ rid, open, onClose, onSaved }: Props
     } catch { setSaveMsg('网络错误') } finally { setSaving(false); setTimeout(() => setSaveMsg(''), 3000) }
   }
 
+  const toggleRoomStatus = async () => {
+    if (!room) return
+    const newStatus = room.status === 'active' ? 'closed' : 'active'
+    const action = newStatus === 'closed' ? '关闭' : '开启'
+    const ok = await dialog.confirm({
+      title: `${action}聊天室`,
+      message: `确定要${action}这个聊天室吗？${newStatus === 'closed' ? '关闭后将无法发送消息和发起通话，但可以查看历史记录。' : ''}`,
+      confirmText: action,
+      variant: newStatus === 'closed' ? 'danger' : 'default',
+    })
+    if (!ok) return
+
+    setSaving(true); setSaveMsg('')
+    try {
+      const r = await fetch('/api/v1/rooms/' + rid + '/settings', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ status: newStatus }),
+      })
+      const d = await r.json()
+      if (d.success) {
+        setRoom((prev: any) => ({ ...prev, status: newStatus }))
+        setSaveMsg(newStatus === 'closed' ? '已关闭' : '已开启')
+        onSaved?.()
+      } else setSaveMsg(d.error?.message_i18n?.zh || '操作失败')
+    } catch { setSaveMsg('网络错误') } finally { setSaving(false); setTimeout(() => setSaveMsg(''), 3000) }
+  }
+
   const addTerm = async () => {
     const r = await fetch('/api/v1/rooms/' + rid + '/glossary', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -162,6 +189,38 @@ export default function RoomSettingsModal({ rid, open, onClose, onSaved }: Props
                         {saving ? <span className="flex items-center gap-1"><IconSpinner size={14} /> 保存中...</span> : '保存'}
                       </button>
                       {saveMsg && <span className="text-sm">{saveMsg}</span>}
+                    </div>
+                  )}
+
+                  {/* 房间状态切换 */}
+                  {isLeader && (
+                    <div className="mt-4 rounded-lg border p-4" style={{ background: room.status === 'active' ? '#f0fdf4' : '#fef2f2' }}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-slate-700">
+                            房间状态：
+                            <span className={`ml-1.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                              room.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'
+                            }`}>
+                              {room.status === 'active' ? '活跃中' : '已关闭'}
+                            </span>
+                          </p>
+                          <p className="mt-1 text-xs text-slate-400">
+                            {room.status === 'active' ? '关闭后将无法发送消息和发起通话' : '开启后可恢复消息发送和通话功能'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={toggleRoomStatus}
+                          disabled={saving}
+                          className={`rounded-lg px-4 py-2 text-sm font-medium transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                            room.status === 'active'
+                              ? 'bg-red-600 text-white hover:bg-red-700'
+                              : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                          }`}
+                        >
+                          {room.status === 'active' ? '关闭房间' : '开启房间'}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
