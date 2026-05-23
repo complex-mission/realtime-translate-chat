@@ -7,10 +7,12 @@ import { useSocket } from '@/hooks/useSocket'
 import { useRTC } from '@/hooks/useRTC'
 import { useLiveTranslate } from '@/hooks/useLiveTranslate'
 import { useToast } from '@/components/ui/toast'
+import { useDialog } from '@/components/ui/dialog'
 import SignedImage from '@/components/ui/signed-image'
 import { IconPhone, IconPhoneOff, IconMic, IconMicOff, IconVideo, IconVideoOff, IconFileText, IconSettings, IconXCircle, IconX, IconSpinner, IconTranslate, IconCheckCircle, IconAlertTriangle, IconClock, IconRefresh } from '@/components/ui/icon'
 import RoomSettingsModal from './room-settings-modal'
 import CallArea from '@/components/call-area'
+import SubtitlePanel from '@/components/subtitle-panel'
 import RichInput from '@/components/rich-input'
 import EmojiText from '@/components/ui/emoji-text'
 
@@ -32,7 +34,7 @@ export default function RoomPage() {
   const [sending, setSending] = useState(false)
   const [inCall, setInCall] = useState(false)
   const [callSid, setCallSid] = useState<number | null>(null)
-  const [inCallUsers, setInCallUsers] = useState<Map<number, { nickname: string; joinedAt: number }>>(new Map())
+  const [inCallUsers, setInCallUsers] = useState<Map<number, { nickname: string; avatar_url?: string; joinedAt: number }>>(new Map())
   const [subtitles, setSubtitles] = useState<Map<number, { text: string; translated: string; targetLang?: string }>>(new Map())
   const [showSummary, setShowSummary] = useState(false)
   const [summaryContent, setSummaryContent] = useState('')
@@ -66,6 +68,7 @@ export default function RoomPage() {
   const statsIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null
   const { toast } = useToast()
+  const dialog = useDialog()
   const { socket, connected, joinRoom, leaveRoom, on } = useSocket(token)
 
   const formatDate = (dateStr: string) => {
@@ -83,6 +86,7 @@ export default function RoomPage() {
 
   const rtc = useRTC({
     appId: process.env.NEXT_PUBLIC_RTC_APP_ID || '',
+    localUserId: user?.id,
     onUserPublished: (userId, mediaType) => {},
     onUserJoined: (userId) => {
       // When a new user joins via RTC, add them to inCallUsers
@@ -91,10 +95,11 @@ export default function RoomPage() {
         setInCallUsers(prev => {
           if (prev.has(numericId)) return prev
           const next = new Map(prev)
-          // Try to find real nickname from room.members
+          // Try to find real nickname and avatar from room.members
           const member = room?.members?.find((m: any) => m.user_id === numericId)
           const nickname = member?.nickname || `用户${numericId}`
-          next.set(numericId, { nickname, joinedAt: Date.now() })
+          const avatar_url = member?.avatar_url
+          next.set(numericId, { nickname, avatar_url, joinedAt: Date.now() })
           console.log('[Page] Added user to inCallUsers via onUserJoined:', numericId, nickname)
           return next
         })
@@ -141,10 +146,11 @@ export default function RoomPage() {
         rtc.remoteUsers.forEach((remoteUser, userId) => {
           const numericId = parseInt(userId.replace('user_', ''))
           if (!isNaN(numericId) && !next.has(numericId)) {
-            // Try to find real nickname from room.members
+            // Try to find real nickname and avatar from room.members
             const member = room?.members?.find((m: any) => m.user_id === numericId)
             const nickname = member?.nickname || `用户${numericId}`
-            next.set(numericId, { nickname, joinedAt: Date.now() })
+            const avatar_url = member?.avatar_url
+            next.set(numericId, { nickname, avatar_url, joinedAt: Date.now() })
             changed = true
             console.log('[Page] Synced user from remoteUsers to inCallUsers:', numericId, nickname)
           }
@@ -172,6 +178,36 @@ export default function RoomPage() {
       if (d.success) setMembers(d.data)
     } catch {}
   }, [rid, token])
+
+  const fetchLiveTranslations = useCallback(async () => {
+    if (!token) return
+    try {
+      const r = await fetch('/api/v1/rooms/' + rid + '/live-translations?limit=20', { 
+        headers: { Authorization: 'Bearer ' + token } 
+      })
+      const d = await r.json()
+      if (d.success && d.data) {
+        // Convert to subtitles format and add to existing subtitles
+        const userLang = user?.lang_pref || 'zh'
+        setSubtitles(prev => {
+          const next = new Map(prev)
+          d.data.forEach((item: any) => {
+            const translatedText = item[`text_${userLang}`] || item.text_zh || item.text_en || item.text_ja
+            if (translatedText) {
+              next.set(item.user_id, {
+                text: '',
+                translated: translatedText,
+                targetLang: userLang
+              })
+            }
+          })
+          return next
+        })
+      }
+    } catch (err) {
+      console.error('Failed to fetch live translations:', err)
+    }
+  }, [rid, token, user?.lang_pref])
 
   const fetchMessages = useCallback(async (beforeId?: number) => {
     if (!token) return
@@ -276,9 +312,40 @@ export default function RoomPage() {
       }
     }
 
+    // Handle kicked event - cleanup RTC resources immediately
+    const handleKicked = async (event: Event) => {
+      const detail = (event as CustomEvent).detail
+      console.log('[Page] Kicked by another device, cleaning up RTC...')
+      
+      // Immediately cleanup RTC resources
+      if (inCall) {
+        try {
+          liveTranslate.stopCapture()
+        } catch (e) {}
+        try {
+          await rtc.leave()
+        } catch (e) {}
+        setInCall(false)
+        setCallSid(null)
+        setSubtitles(new Map())
+        setInCallUsers(new Map())
+        setPublishStats(null)
+      }
+      
+      // Show custom dialog and redirect
+      await dialog.alert({
+        title: '账号在其他设备登录',
+        message: detail?.message || '您的账号在其他设备登录，当前连接已断开',
+        variant: 'warning'
+      })
+      window.location.href = '/login'
+    }
+
     window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener('rtc-kicked', handleKicked)
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('rtc-kicked', handleKicked)
       if (inCall) {
         // Normal leave when component unmounts
         leaveCall()
@@ -299,28 +366,57 @@ export default function RoomPage() {
       }
     })
     const u2 = on('subtitle:stream', (d: any) => {
-      // 只处理匹配用户语言偏好的字幕
-      const userLang = user?.lang_pref || 'zh'
-      if (d.target_lang && d.target_lang !== userLang) {
-        return // 忽略不匹配的字幕
-      }
-      setSubtitles(p => {
-        const n = new Map(p)
-        if (d.is_final) {
-          // 最终结果，显示后 5 秒自动消失
-          n.set(d.user_id || 0, { text: d.text_original || '', translated: d.text_translated, targetLang: d.target_lang })
-          setTimeout(() => {
-            setSubtitles(prev => {
-              const next = new Map(prev)
-              next.delete(d.user_id || 0)
-              return next
+      console.log('[Page] Received subtitle:', d)
+      
+      // Handle new multi-language format
+      if (d.translations) {
+        const userLang = user?.lang_pref || 'zh'
+        const translatedText = d.translations[userLang] || d.translations['zh'] || Object.values(d.translations)[0]
+        
+        if (translatedText) {
+          setSubtitles(p => {
+            const n = new Map(p)
+            n.set(d.user_id || 0, { 
+              text: '', 
+              translated: translatedText as string, 
+              targetLang: userLang 
             })
-          }, 5000)
-        } else {
-          n.set(d.user_id || 0, { text: d.text_original || '', translated: d.text_translated, targetLang: d.target_lang })
+            
+            // Auto-remove after 10 seconds
+            setTimeout(() => {
+              setSubtitles(prev => {
+                const next = new Map(prev)
+                next.delete(d.user_id || 0)
+                return next
+              })
+            }, 10000)
+            
+            return n
+          })
         }
-        return n
-      })
+      } else {
+        // Handle old format (backward compatibility)
+        const userLang = user?.lang_pref || 'zh'
+        if (d.target_lang && d.target_lang !== userLang) {
+          return
+        }
+        setSubtitles(p => {
+          const n = new Map(p)
+          n.set(d.user_id || 0, { text: d.text_original || '', translated: d.text_translated, targetLang: d.target_lang })
+          
+          if (d.is_final) {
+            setTimeout(() => {
+              setSubtitles(prev => {
+                const next = new Map(prev)
+                next.delete(d.user_id || 0)
+                return next
+              })
+            }, 5000)
+          }
+          
+          return n
+        })
+      }
     })
     const u3 = on('call:started', (d: any) => setCallSid(d.call_session_id))
     const u4 = on('call:ended', () => { setInCall(false); setCallSid(null); setSubtitles(new Map()); setInCallUsers(new Map()) })
@@ -575,7 +671,9 @@ export default function RoomPage() {
           // Add self to inCallUsers first
           setInCallUsers(prev => {
             const next = new Map(prev)
-            next.set(user.id, { nickname: user.nickname, joinedAt: Date.now() })
+            // Find avatar from room.members
+            const selfMember = room?.members?.find((m: any) => m.user_id === user.id)
+            next.set(user.id, { nickname: user.nickname, avatar_url: selfMember?.avatar_url, joinedAt: Date.now() })
             return next
           })
 
@@ -589,7 +687,7 @@ export default function RoomPage() {
                 // Add existing participants
                 for (const p of activeData.data.participants) {
                   if (p.user_id !== user.id && !next.has(p.user_id)) {
-                    next.set(p.user_id, { nickname: p.nickname, joinedAt: Date.now() })
+                    next.set(p.user_id, { nickname: p.nickname, avatar_url: p.avatar_url, joinedAt: Date.now() })
                   }
                 }
                 return next
@@ -625,6 +723,9 @@ export default function RoomPage() {
               toast('warning', '已加入通话，但无法推流（摄像头/麦克风不可用）')
               setPublishStats(null)
             }
+            
+            // Fetch historical live translations
+            fetchLiveTranslations()
           } catch (rtcError) {
             console.error('RTC join failed:', rtcError)
             toast('warning', '已加入通话，但音视频连接失败')
@@ -783,7 +884,7 @@ export default function RoomPage() {
           participants={Array.from(inCallUsers.entries()).map(([userId, data]) => ({
             user_id: userId,
             nickname: data.nickname,
-            avatar_url: null
+            avatar_url: data.avatar_url || null
           }))}
           remoteUsers={rtc.remoteUsers}
           localVideoTrack={rtc.localVideoTrack}
@@ -805,10 +906,42 @@ export default function RoomPage() {
           playRemoteVideo={rtc.playRemoteVideo}
           liveTranslateEnabled={liveTranslate.enabled}
           liveTranslateLoading={liveTranslate.isTranslating}
-          onToggleLiveTranslate={liveTranslate.toggle}
+          onToggleLiveTranslate={() => {
+            // Get first remote user's audio track for translation
+            let remoteAudioTrack: any = null
+            rtc.remoteUsers.forEach((user) => {
+              if (user.audioTrack && !remoteAudioTrack) {
+                remoteAudioTrack = user.audioTrack
+              }
+            })
+            liveTranslate.toggle(remoteAudioTrack)
+          }}
           publishStats={publishStats}
+          speakingUsers={rtc.speakingUsers}
         />
       )}
+
+      {/* Subtitle Panel - Fixed position */}
+      <SubtitlePanel
+        subtitles={subtitles}
+        participants={Array.from(inCallUsers.entries()).map(([userId, data]) => ({
+          user_id: userId,
+          nickname: data.nickname,
+          avatar_url: data.avatar_url || null
+        }))}
+        subtitleFontSize={subtitleFontSize}
+        enabled={liveTranslate.enabled}
+        onToggle={() => {
+          let remoteAudioTrack: any = null
+          rtc.remoteUsers.forEach((user) => {
+            if (user.audioTrack && !remoteAudioTrack) {
+              remoteAudioTrack = user.audioTrack
+            }
+          })
+          liveTranslate.toggle(remoteAudioTrack)
+        }}
+        onClose={() => liveTranslate.stopCapture()}
+      />
 
       {/* Messages */}
       <div ref={containerRef} className="flex-1 overflow-auto p-4" style={{ background: 'var(--surface-bg)' }}>

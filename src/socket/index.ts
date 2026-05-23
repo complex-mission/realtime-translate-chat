@@ -39,10 +39,52 @@ export function initSocket(server: HTTP) {
 
   io.on('connection', (s) => {
     const u: User = s.data.user
+    console.log(`[Socket] User ${u.id} connected with socketId: ${s.id}`)
 
-    // PRD 九: user:online:{userId} - 在线状态
-    redis.hset('user:online:' + u.id, { socketId: s.id, ts: Date.now().toString() })
-    redis.expire('user:online:' + u.id, 60)
+    // Check if user already has another connection (single device login)
+    const checkExistingConnection = async () => {
+      const existing = await redis.hgetall('user:online:' + u.id)
+      console.log(`[Socket] Existing connection for user ${u.id}:`, existing)
+      
+      if (existing && existing.socketId) {
+        console.log(`[Socket] Comparing socketIds - existing: "${existing.socketId}", new: "${s.id}", match: ${existing.socketId === s.id}`)
+        
+        if (existing.socketId !== s.id) {
+          // Try to find and kick the old connection
+          let oldSocket = io?.sockets?.sockets?.get(existing.socketId)
+          
+          // If not found by direct lookup, try to find by iterating
+          if (!oldSocket && io?.sockets?.sockets) {
+            console.log(`[Socket] Direct lookup failed, trying to find by iterating...`)
+            for (const [id, socket] of io.sockets.sockets) {
+              if (id === existing.socketId) {
+                oldSocket = socket
+                break
+              }
+            }
+          }
+          
+          console.log(`[Socket] Old socket found:`, !!oldSocket, oldSocket?.id)
+          
+          if (oldSocket) {
+            console.log(`[Socket] Kicking old connection for user ${u.id}: ${existing.socketId}`)
+            oldSocket.emit('error', { message: '您的账号在其他设备登录，当前连接已断开' })
+            oldSocket.disconnect(true)
+          } else {
+            console.log(`[Socket] Old socket not found in memory, cleaning up stale Redis data`)
+            // Clean up stale Redis data - the old connection is already gone
+            await redis.del('user:online:' + u.id)
+          }
+        }
+      }
+    }
+    
+    // Execute check and wait for it to complete before updating Redis
+    checkExistingConnection().then(() => {
+      // Update Redis with new socketId after check is complete
+      redis.hset('user:online:' + u.id, { socketId: s.id, ts: Date.now().toString() })
+      redis.expire('user:online:' + u.id, 60)
+    }).catch(console.error)
 
     // PRD 16.12: heartbeat
     s.on('heartbeat', () => {

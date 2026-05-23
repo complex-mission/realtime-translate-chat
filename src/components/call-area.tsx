@@ -3,6 +3,17 @@ import { useEffect, useRef, useCallback } from 'react'
 import { IconMic, IconMicOff, IconVideo, IconVideoOff, IconTranslate, IconSpinner } from '@/components/ui/icon'
 import SignedImage from '@/components/ui/signed-image'
 
+// Add styles for responsive call cards
+const callCardStyles = `
+  @media (max-width: 450px) {
+    .call-card {
+      flex: 1 1 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+    }
+  }
+`
+
 interface CallParticipant {
   user_id: number
   nickname: string
@@ -40,6 +51,7 @@ interface CallAreaProps {
   liveTranslateLoading: boolean
   onToggleLiveTranslate: () => void
   publishStats?: any
+  speakingUsers?: Set<string>
 }
 
 export default function CallArea({
@@ -66,6 +78,7 @@ export default function CallArea({
   liveTranslateLoading,
   onToggleLiveTranslate,
   publishStats,
+  speakingUsers,
 }: CallAreaProps) {
   const localVideoRef = useRef<HTMLDivElement>(null)
   const videoPlayTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
@@ -252,7 +265,9 @@ export default function CallArea({
   }, [collapsed])
 
   return (
-    <div style={{ background: '#eff6ff', borderBottom: '1px solid #bfdbfe' }}>
+    <>
+      <style>{callCardStyles}</style>
+      <div style={{ background: '#eff6ff', borderBottom: '1px solid #bfdbfe' }}>
       <div className="flex items-center justify-between px-4 py-2.5">
         <button
           onClick={onToggleCollapse}
@@ -331,33 +346,58 @@ export default function CallArea({
 
       {!collapsed && (
         <div className="px-4 pb-4">
-          <div className="grid gap-3 overflow-y-auto pr-1" style={{ 
-            gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+          <div style={{ 
+            display: 'flex',
+            gap: '12px',
             maxHeight: '60vh'
           }}>
-            <div className="relative aspect-video rounded-xl overflow-hidden bg-slate-900">
-              {localVideoTrack ? (
-                <div ref={localVideoRef} className="h-full w-full" />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center">
-                  <div className="h-16 w-16 rounded-full bg-blue-100 flex items-center justify-center">
-                    <span className="text-2xl font-bold text-blue-700">
-                      {participants.find((p) => p.user_id === localUserId)?.nickname?.[0] || '我'}
-                    </span>
+            {/* Video cards area */}
+            <div className="flex-1 overflow-y-auto" style={{ 
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '12px',
+              minWidth: 0
+            }}>
+              {/* Local user card */}
+              {(() => {
+                const localSpeaking = speakingUsers?.has(`user_${localUserId}`) || false
+                return (
+                  <div className={`relative aspect-video rounded-xl overflow-hidden bg-slate-900 call-card ${localSpeaking ? 'ring-4 ring-green-500' : ''}`} style={{ 
+                    flex: '1 1 200px',
+                    maxWidth: '600px',
+                    minWidth: '200px',
+                    transition: 'box-shadow 0.2s ease'
+                  }}>
+                {localVideoTrack ? (
+                  <div ref={localVideoRef} className="h-full w-full" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center">
+                    <div className="h-16 w-16 rounded-full overflow-hidden bg-blue-100">
+                      {(() => {
+                        const localParticipant = participants.find((p) => p.user_id === localUserId)
+                        if (localParticipant?.avatar_url) {
+                          return <SignedImage src={localParticipant.avatar_url} alt="" className="h-full w-full object-cover" />
+                        }
+                        return (
+                          <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-blue-700">
+                            {localParticipant?.nickname?.[0] || '我'}
+                          </div>
+                        )
+                      })()}
+                    </div>
                   </div>
-                </div>
-              )}
-              <div className="absolute top-2 right-2 flex items-center gap-1">
-                {hasCamera === false && (
-                  <span className="rounded-md bg-red-500/80 px-1.5 py-0.5 text-[10px] text-white">无摄像头</span>
                 )}
-                {hasMic === false && (
-                  <span className="rounded-md bg-red-500/80 px-1.5 py-0.5 text-[10px] text-white">无麦克风</span>
-                )}
-                {muted && (
-                  <span className="rounded-md bg-red-500 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
-                    <IconMicOff size={10} /> 已静音
-                  </span>
+                <div className="absolute top-2 right-2 flex items-center gap-1">
+                  {hasCamera === false && (
+                    <span className="rounded-md bg-red-500/80 px-1.5 py-0.5 text-[10px] text-white">无摄像头</span>
+                  )}
+                  {hasMic === false && (
+                    <span className="rounded-md bg-red-500/80 px-1.5 py-0.5 text-[10px] text-white">无麦克风</span>
+                  )}
+                  {muted && (
+                    <span className="rounded-md bg-red-500 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
+                      <IconMicOff size={10} /> 已静音
+                    </span>
                 )}
               </div>
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
@@ -403,6 +443,8 @@ export default function CallArea({
                 </div>
               </div>
             </div>
+            )
+            })()}
 
             {participants
               .filter((p) => p.user_id !== localUserId)
@@ -421,7 +463,12 @@ export default function CallArea({
                 })
 
                 return (
-                  <div key={p.user_id} className="relative aspect-video rounded-xl overflow-hidden bg-slate-900">
+                  <div key={p.user_id} className={`relative aspect-video rounded-xl overflow-hidden bg-slate-900 call-card ${speakingUsers?.has(remoteUserId) ? 'ring-4 ring-green-500' : ''}`} style={{ 
+                    flex: '1 1 200px',
+                    maxWidth: '600px',
+                    minWidth: '200px',
+                    transition: 'box-shadow 0.2s ease'
+                  }}>
                     {hasVideo ? (
                       <div id={`remote-video-${remoteUserId}`} className="h-full w-full" />
                     ) : (
@@ -455,30 +502,11 @@ export default function CallArea({
                   </div>
                 )
               })}
-          </div>
-
-          {liveTranslateEnabled && subtitles.size > 0 && (
-            <div className="mt-3 rounded-xl bg-purple-50 p-3 shadow-sm" style={{ border: '1px solid #e9d5ff' }}>
-              <div className="flex items-center gap-2 mb-2">
-                <IconTranslate size={14} className="text-purple-500" />
-                <span className="text-xs font-medium text-purple-600">同传翻译</span>
-              </div>
-              {Array.from(subtitles.entries()).map(([userId, sub]) => (
-                <div key={userId} className="text-sm mb-1 last:mb-0">
-                  {sub.text && <p className="text-slate-500 text-xs">{sub.text}</p>}
-                  {sub.translated && (
-                    <p className={`font-medium ${
-                      subtitleFontSize === 'sm' ? 'text-xs' : subtitleFontSize === 'lg' ? 'text-base' : 'text-sm'
-                    }`} style={{ color: 'var(--blue-hover)' }}>
-                      {sub.translated}
-                    </p>
-                  )}
-                </div>
-              ))}
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>
+    </>
   )
 }

@@ -7,6 +7,8 @@ let sock: Socket | null = null
 export function useSocket(token: string | null) {
   const [connected, setConnected] = useState(false)
   const [authError, setAuthError] = useState(false)
+  const [kicked, setKicked] = useState(false)
+  const [kickMessage, setKickMessage] = useState<string | null>(null)
   const ref = useRef<Socket | null>(null)
 
   useEffect(() => {
@@ -25,7 +27,7 @@ export function useSocket(token: string | null) {
 
     ref.current = sock
 
-    sock.on('connect', () => { setConnected(true); setAuthError(false) })
+    sock.on('connect', () => { setConnected(true); setAuthError(false); setKicked(false); setKickMessage(null) })
     sock.on('disconnect', (reason) => {
       setConnected(false)
       // 鉴权失败不重连
@@ -42,6 +44,22 @@ export function useSocket(token: string | null) {
         sock?.disconnect()
       }
     })
+    
+    // Handle kicked event (single device login)
+    sock.on('error', (data) => {
+      if (data?.message?.includes('其他设备登录')) {
+        console.log('[Socket] Kicked by another device')
+        setKicked(true)
+        setKickMessage(data.message)
+        
+        // Dispatch a custom event to notify RTC to cleanup
+        window.dispatchEvent(new CustomEvent('rtc-kicked', { detail: { message: data.message } }))
+        
+        // Disconnect socket
+        sock?.disconnect()
+        sessionStorage.clear()
+      }
+    })
 
     return () => { /* keep connection alive */ }
   }, [token])
@@ -53,5 +71,5 @@ export function useSocket(token: string | null) {
     return () => { sock?.off(event, handler) }
   }, [])
 
-  return { socket: ref.current, connected, authError, joinRoom, leaveRoom, on }
+  return { socket: ref.current, connected, authError, kicked, kickMessage, joinRoom, leaveRoom, on }
 }

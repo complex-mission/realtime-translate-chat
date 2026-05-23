@@ -82,6 +82,15 @@ export async function migrate() {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
   console.log('✓ glossaries')
 
+  await conn.execute(`CREATE TABLE IF NOT EXISTS live_translations (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT, room_id BIGINT NOT NULL, call_session_id BIGINT NULL,
+    user_id BIGINT NOT NULL, source_lang VARCHAR(10) NULL,
+    text_zh TEXT NULL, text_en TEXT NULL, text_ja TEXT NULL,
+    audio_chunk_id VARCHAR(64) NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_room_time(room_id, created_at), INDEX idx_call(call_session_id), INDEX idx_user(user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+  console.log('✓ live_translations')
+
   console.log('\n✅ All tables created!')
   await conn.end()
 }

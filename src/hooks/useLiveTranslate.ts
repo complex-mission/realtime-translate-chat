@@ -13,19 +13,34 @@ interface LiveTranslateOptions {
 export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtitle }: LiveTranslateOptions) {
   const [enabled, setEnabled] = useState(false)
   const [isTranslating, setIsTranslating] = useState(false)
+  const audioContextRef = useRef<AudioContext | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
-  const streamRef = useRef<MediaStream | null>(null)
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
   const enabledRef = useRef(false)
+  const remoteAudioStreamRef = useRef<MediaStream | null>(null)
 
-  const startCapture = useCallback(async () => {
-    if (!token) return false
+  const startCapture = useCallback(async (remoteAudioTrack?: any) => {
+    if (!token) {
+      console.log('[LiveTranslate] No token, cannot start')
+      return false
+    }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
+      let stream: MediaStream
+      
+      if (remoteAudioTrack) {
+        console.log('[LiveTranslate] Using remote audio track:', remoteAudioTrack)
+        const mediaStreamTrack = remoteAudioTrack.getMediaStreamTrack ? remoteAudioTrack.getMediaStreamTrack() : remoteAudioTrack
+        stream = new MediaStream([mediaStreamTrack])
+        remoteAudioStreamRef.current = stream
+      } else {
+        console.log('[LiveTranslate] No remote audio track, using local microphone')
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        remoteAudioStreamRef.current = stream
+      }
 
+      console.log('[LiveTranslate] Audio stream created, starting MediaRecorder')
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm;codecs=opus',
       })
@@ -38,21 +53,32 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       }
 
       mediaRecorder.onstop = async () => {
-        if (!enabledRef.current) return // Don't process if disabled
+        if (!enabledRef.current) {
+          console.log('[LiveTranslate] Not enabled, skipping translation')
+          return
+        }
         
         const chunks = audioChunksRef.current
         audioChunksRef.current = []
 
-        if (chunks.length === 0) return
+        if (chunks.length === 0) {
+          console.log('[LiveTranslate] No audio chunks, skipping')
+          return
+        }
 
+        console.log('[LiveTranslate] Got', chunks.length, 'audio chunks, starting translation')
         const audioBlob = new Blob(chunks, { type: 'audio/webm' })
         const reader = new FileReader()
 
         reader.onloadend = async () => {
-          if (!enabledRef.current) return
+          if (!enabledRef.current) {
+            console.log('[LiveTranslate] Not enabled after read, skipping')
+            return
+          }
           
           const base64data = reader.result as string
           const base64Audio = base64data.split(',')[1]
+          console.log('[LiveTranslate] Audio encoded, calling translation API...')
 
           try {
             const res = await fetch('/api/v1/translate-stream', {
@@ -64,63 +90,39 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
               body: JSON.stringify({
                 audio: base64Audio,
                 format: 'webm',
-                target_lang: userLangPref,
+                source_lang: 'auto',
+                room_id: roomId,
+                user_id: 0 // System translation
               }),
             })
 
             if (!res.ok) {
-              console.error('Translation API error:', res.status)
+              console.error('[LiveTranslate] Translation API error:', res.status)
               return
             }
 
-            const reader = res.body?.getReader()
-            if (!reader) return
+            const data = await res.json()
+            console.log('[LiveTranslate] Translation result:', data)
 
-            const decoder = new TextDecoder()
-            let translatedText = ''
+            if (data.success && data.data?.translations) {
+              // Get translation for user's language preference
+              const translatedText = data.data.translations[userLangPref] || 
+                                     data.data.translations['zh'] || 
+                                     Object.values(data.data.translations)[0]
 
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-
-              const text = decoder.decode(value, { stream: true })
-              const lines = text.split('\n')
-
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  const data = line.slice(6).trim()
-                  if (data === '[DONE]') continue
-
-                  try {
-                    const json = JSON.parse(data)
-                    if (json.text) {
-                      translatedText += json.text
-                    }
-                  } catch {
-                    // Skip
-                  }
-                }
+              if (translatedText) {
+                console.log('[LiveTranslate] Translation complete:', translatedText)
+                onSubtitle({
+                  userId: 0,
+                  text: '',
+                  translated: translatedText as string,
+                  isFinal: true,
+                  targetLang: userLangPref,
+                })
               }
             }
-
-            if (translatedText && enabledRef.current) {
-              onSubtitle({
-                userId: 0,
-                text: '',
-                translated: translatedText,
-                isFinal: true,
-                targetLang: userLangPref,
-              })
-
-              socket?.emit('subtitle:stream', {
-                room_id: roomId,
-                text_translated: translatedText,
-                target_lang: userLangPref,
-                is_final: true,
-              })
-            }
           } catch (err) {
-            console.error('Translation error:', err)
+            console.error('[LiveTranslate] Translation error:', err)
           }
         }
 
@@ -128,6 +130,7 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       }
 
       mediaRecorder.start(100)
+      console.log('[LiveTranslate] MediaRecorder started')
       intervalRef.current = setInterval(() => {
         if (mediaRecorder.state === 'recording') {
           mediaRecorder.stop()
@@ -138,11 +141,11 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       setIsTranslating(false)
       return true
     } catch (err) {
-      console.error('Failed to start audio capture:', err)
+      console.error('[LiveTranslate] Failed to start audio capture:', err)
       setIsTranslating(false)
       return false
     }
-  }, [token, roomId, socket, userLangPref, onSubtitle])
+  }, [token, roomId, userLangPref, onSubtitle])
 
   const stopCapture = useCallback(() => {
     if (intervalRef.current) {
@@ -156,9 +159,9 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       } catch {}
     }
 
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
+    if (remoteAudioStreamRef.current) {
+      remoteAudioStreamRef.current.getTracks().forEach((track) => track.stop())
+      remoteAudioStreamRef.current = null
     }
 
     mediaRecorderRef.current = null
@@ -166,7 +169,7 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
     setIsTranslating(false)
   }, [])
 
-  const toggle = useCallback(async () => {
+  const toggle = useCallback(async (remoteAudioTrack?: any) => {
     if (enabledRef.current) {
       // Stop
       enabledRef.current = false
@@ -177,7 +180,7 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       setIsTranslating(true)
       enabledRef.current = true
       setEnabled(true)
-      const success = await startCapture()
+      const success = await startCapture(remoteAudioTrack)
       if (!success) {
         enabledRef.current = false
         setEnabled(false)

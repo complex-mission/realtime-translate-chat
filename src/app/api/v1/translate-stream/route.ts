@@ -1,6 +1,11 @@
 import { NextRequest } from 'next/server'
 import { getUser } from '@/lib/auth'
 import { errResponse } from '@/lib/errors'
+import { emitToRoom } from '@/socket'
+import { execute } from '@/lib/db'
+
+// Supported languages for translation
+const SUPPORTED_LANGUAGES = ['zh', 'en', 'ja']
 
 export async function POST(req: NextRequest) {
   const u = await getUser(req)
@@ -16,113 +21,107 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json()
-    const { audio, format = 'wav', source_lang, target_lang } = body
+    const { audio, format = 'wav', source_lang, room_id, user_id, call_session_id } = body
 
     if (!audio) {
       return Response.json({ success: false, error: { message: 'Missing audio data' } }, { status: 400 })
     }
 
-    const messages = [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'input_audio',
-            input_audio: {
-              data: audio,
-              format: format,
+    // Translate to all supported languages concurrently
+    const translationPromises = SUPPORTED_LANGUAGES.map(async (target_lang) => {
+      const messages = [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_audio',
+              input_audio: {
+                data: audio,
+                format: format,
+              },
             },
+          ],
+        },
+      ]
+
+      const translationOptions: any = { target_lang }
+      if (source_lang) translationOptions.source_lang = source_lang
+
+      try {
+        const response = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${DASHSCOPE_API_KEY}`,
+            'Content-Type': 'application/json',
           },
-        ],
-      },
-    ]
+          body: JSON.stringify({
+            model: process.env.QWEN_LIVE_TRANSLATE_MODEL || 'qwen3-livetranslate-flash-2025-12-01',
+            messages,
+            modalities: ['text'],
+            stream: false, // Non-streaming for batch processing
+            translation_options: translationOptions,
+          }),
+        })
 
-    const translationOptions: any = {}
-    if (source_lang) translationOptions.source_lang = source_lang
-    if (target_lang) translationOptions.target_lang = target_lang
+        if (!response.ok) {
+          console.error(`Translation API error for ${target_lang}:`, response.status)
+          return { lang: target_lang, text: '', error: true }
+        }
 
-    const response = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${DASHSCOPE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'qwen3-livetranslate-flash-2025-12-01',
-        messages,
-        modalities: ['text'],
-        stream: true,
-        stream_options: { include_usage: true },
-        translation_options: translationOptions,
-      }),
+        const data = await response.json()
+        const content = data.choices?.[0]?.message?.content || ''
+        return { lang: target_lang, text: content, error: false }
+      } catch (err) {
+        console.error(`Translation error for ${target_lang}:`, err)
+        return { lang: target_lang, text: '', error: true }
+      }
     })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error('DashScope API error:', response.status, errorText)
-      return Response.json(
-        { success: false, error: { message: `Translation API error: ${response.status}` } },
-        { status: response.status }
-      )
+    // Wait for all translations to complete
+    const results = await Promise.all(translationPromises)
+
+    // Build translations object
+    const translations: Record<string, string> = {}
+    results.forEach(({ lang, text }) => {
+      if (text) translations[lang] = text
+    })
+
+    // Save to database
+    if (room_id && Object.keys(translations).length > 0) {
+      try {
+        await execute(
+          `INSERT INTO live_translations (room_id, call_session_id, user_id, source_lang, text_zh, text_en, text_ja) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            room_id,
+            call_session_id || null,
+            user_id || u.id,
+            source_lang || null,
+            translations['zh'] || null,
+            translations['en'] || null,
+            translations['ja'] || null
+          ]
+        )
+        console.log('[Translation] Saved to database')
+      } catch (dbErr) {
+        console.error('[Translation] Failed to save to database:', dbErr)
+      }
     }
 
-    const encoder = new TextEncoder()
-    const stream = new ReadableStream({
-      async start(controller) {
-        const reader = response.body?.getReader()
-        if (!reader) {
-          controller.close()
-          return
-        }
+    // Broadcast translations to room via socket
+    if (room_id && Object.keys(translations).length > 0) {
+      emitToRoom(room_id, 'subtitle:stream', {
+        user_id: user_id || u.id,
+        translations,
+        is_final: true,
+        timestamp: Date.now()
+      })
+      console.log('[Translation] Broadcasted to room:', room_id)
+    }
 
-        const decoder = new TextDecoder()
-        let buffer = ''
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            buffer += decoder.decode(value, { stream: true })
-            const lines = buffer.split('\n')
-            buffer = lines.pop() || ''
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6).trim()
-                if (data === '[DONE]') {
-                  controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-                  continue
-                }
-
-                try {
-                  const json = JSON.parse(data)
-                  const content = json.choices?.[0]?.delta?.content || ''
-                  if (content) {
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify({ text: content })}\n\n`)
-                    )
-                  }
-                } catch {
-                  // Skip invalid JSON
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.error('Stream error:', err)
-        } finally {
-          controller.close()
-        }
-      },
-    })
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
+    return Response.json({
+      success: true,
+      data: { translations }
     })
   } catch (err: any) {
     console.error('Translation error:', err)

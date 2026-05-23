@@ -237,9 +237,9 @@ export default function ChatPage() {
 
                   {/* 第三行：成员头像堆叠 + 创建信息 + 删除 */}
                   <div className="mt-2.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center">
-                        {preview.map((m: any, i: number) => {
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex items-center overflow-hidden">
+                        {preview.slice(0, 5).map((m: any, i: number) => {
                           const colorIdx = (m.user_id || i) % avatarColors.length
                           return (
                             <div key={m.user_id}
@@ -275,8 +275,8 @@ export default function ChatPage() {
                           </div>
                         )}
                       </div>
-                      <span className="text-xs text-slate-400">{r.member_count} 人</span>
-                      <span className="text-xs text-slate-300">· {r.message_count || 0} 条消息</span>
+                      <span className="text-xs text-slate-400 shrink-0">{r.member_count} 人</span>
+                      <span className="text-xs text-slate-300 shrink-0">· {r.message_count || 0} 条消息</span>
                       {r.creator_nickname && (
                         <span className="text-xs text-slate-300 hidden sm:inline truncate max-w-[80px]">· {r.creator_nickname}</span>
                       )}

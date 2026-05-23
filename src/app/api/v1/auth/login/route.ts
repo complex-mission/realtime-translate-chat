@@ -4,6 +4,7 @@ import redis, { incrRedis } from '@/lib/redis'
 import { verifyPassword, signAccessToken, signRefreshToken, genJti, track } from '@/lib/auth'
 import { errResponse, okResponse } from '@/lib/errors'
 import { getRefreshTokenCookie } from '@/lib/cookies'
+import { getIO } from '@/socket'
 import type { User } from '@/types'
 
 export async function POST(req: NextRequest) {
@@ -38,6 +39,43 @@ export async function POST(req: NextRequest) {
 
     // 清除失败计数
     await redis.del('auth:fail:' + user.id)
+
+    // Single device login: kick existing connection if any
+    const existingOnline = await redis.hgetall('user:online:' + user.id)
+    console.log(`[Login] Existing online status for user ${user.id}:`, existingOnline)
+    
+    if (existingOnline && existingOnline.socketId) {
+      const io = getIO() || (globalThis as any).__socket_io
+      if (io) {
+        console.log(`[Login] Looking for socket with id: ${existingOnline.socketId}`)
+        console.log(`[Login] Available sockets:`, Array.from(io.sockets?.sockets?.keys() || []))
+        
+        let oldSocket = io.sockets?.sockets?.get(existingOnline.socketId)
+        
+        // If not found by direct lookup, try to find by iterating
+        if (!oldSocket && io.sockets?.sockets) {
+          console.log(`[Login] Direct lookup failed, trying to find by iterating...`)
+          for (const [id, socket] of io.sockets.sockets) {
+            if (id === existingOnline.socketId) {
+              oldSocket = socket
+              break
+            }
+          }
+        }
+        
+        console.log(`[Login] Old socket found:`, !!oldSocket, oldSocket?.id)
+        
+        if (oldSocket) {
+          console.log(`[Login] Kicking old connection for user ${user.id}: ${existingOnline.socketId}`)
+          oldSocket.emit('error', { message: '您的账号在其他设备登录，当前连接已断开' })
+          oldSocket.disconnect(true)
+        } else {
+          console.log(`[Login] Old socket not found in memory, cleaning up stale Redis data`)
+        }
+      }
+      // Clean up old online status
+      await redis.del('user:online:' + user.id)
+    }
 
     // PRD 15.2/15.3: 生成双令牌
     const jti = genJti()

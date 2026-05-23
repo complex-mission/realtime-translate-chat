@@ -11,6 +11,7 @@ interface RTCState {
 
 interface UseRTCOptions {
   appId: string
+  localUserId?: number
   onUserPublished?: (userId: string, mediaType: 'audio' | 'video') => void
   onUserJoined?: (userId: string) => void
   onUserLeft?: (userId: string) => void
@@ -34,9 +35,11 @@ export function useRTC(options: UseRTCOptions) {
   const [audioLevel, setAudioLevel] = useState(0)
   const [hasCamera, setHasCamera] = useState<boolean | null>(null)
   const [hasMic, setHasMic] = useState<boolean | null>(null)
+  const [speakingUsers, setSpeakingUsers] = useState<Set<string>>(new Set())
   const DingRTCRef = useRef<any>(null)
   const mcuAudioSubscribed = useRef(false)
   const audioLevelInterval = useRef<NodeJS.Timeout | null>(null)
+  const speakingTimeoutRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -91,18 +94,62 @@ export function useRTC(options: UseRTCOptions) {
       clearInterval(audioLevelInterval.current)
     }
     audioLevelInterval.current = setInterval(() => {
+      // Monitor local audio level
       if (localAudioTrackRef.current) {
         try {
           const level = localAudioTrackRef.current.getVolumeLevel()
           setAudioLevel(level)
+          
+          // Update speaking users for local user
+          if (level > 0.3) {
+            setSpeakingUsers(prev => {
+              const next = new Set(prev)
+              next.add(`user_${options.localUserId}`)
+              return next
+            })
+          }
         } catch {
           setAudioLevel(0)
         }
       } else {
         setAudioLevel(0)
       }
+      
+      // Monitor remote users audio levels
+      setState(prev => {
+        const newSpeakingUsers = new Set<string>()
+        prev.remoteUsers.forEach((user, userId) => {
+          if (user.audioTrack && !user.audioMuted) {
+            try {
+              const level = user.audioTrack.getVolumeLevel()
+              if (level > 0.3) {
+                newSpeakingUsers.add(userId)
+              }
+            } catch {}
+          }
+        })
+        
+        // Update speaking users
+        setSpeakingUsers(prevSpeaking => {
+          const next = new Set(prevSpeaking)
+          // Keep local user if speaking
+          if (prev.localAudioTrack) {
+            try {
+              const localLevel = prev.localAudioTrack.getVolumeLevel()
+              if (localLevel > 0.3) {
+                next.add(`user_${options.localUserId}`)
+              }
+            } catch {}
+          }
+          // Add remote speaking users
+          newSpeakingUsers.forEach(uid => next.add(uid))
+          return next
+        })
+        
+        return prev
+      })
     }, 200)
-  }, [])
+  }, [options.localUserId])
 
   const stopAudioLevelMonitor = useCallback(() => {
     if (audioLevelInterval.current) {
@@ -202,6 +249,69 @@ export function useRTC(options: UseRTCOptions) {
       options.onUserLeft?.(user.userId)
     })
 
+    // Listen for user-info-updated events (mute/unmute state changes)
+    client.on('user-info-updated', (uid: string, msg: string) => {
+      console.log('[RTC] User info updated:', uid, msg)
+      setState((prev) => {
+        const next = new Map(prev.remoteUsers)
+        const existing = next.get(uid)
+        if (existing) {
+          if (msg === 'mute-audio') {
+            existing.audioMuted = true
+          } else if (msg === 'unmute-audio') {
+            existing.audioMuted = false
+          } else if (msg === 'mute-video') {
+            existing.videoOff = true
+          } else if (msg === 'unmute-video') {
+            existing.videoOff = false
+          }
+          next.set(uid, { ...existing })
+        }
+        return { ...prev, remoteUsers: next }
+      })
+    })
+
+    // Listen for user-mic-audio-muted events
+    client.on('user-mic-audio-muted', (uid: string, muted: boolean) => {
+      console.log('[RTC] User mic audio muted:', uid, muted)
+      setState((prev) => {
+        const next = new Map(prev.remoteUsers)
+        const existing = next.get(uid)
+        if (existing) {
+          existing.audioMuted = muted
+          next.set(uid, { ...existing })
+        }
+        return { ...prev, remoteUsers: next }
+      })
+    })
+
+    // Listen for volume-indicator events to detect who is speaking
+    client.on('volume-indicator', (uids: string[]) => {
+      console.log('[RTC] Volume indicator - speaking users:', uids)
+      
+      // Update speaking users
+      setSpeakingUsers(new Set(uids))
+      
+      // Clear previous timeouts
+      speakingTimeoutRef.current.forEach((timeout) => {
+        clearTimeout(timeout)
+      })
+      speakingTimeoutRef.current.clear()
+      
+      // Set timeout to clear speaking status after 1 second of silence
+      uids.forEach(uid => {
+        const timeout = setTimeout(() => {
+          setSpeakingUsers(prev => {
+            const next = new Set(prev)
+            next.delete(uid)
+            return next
+          })
+          speakingTimeoutRef.current.delete(uid)
+        }, 1000)
+        speakingTimeoutRef.current.set(uid, timeout)
+      })
+    })
+
     const response = await client.join({
       uid,
       channel,
@@ -236,38 +346,48 @@ export function useRTC(options: UseRTCOptions) {
         // Trigger onUserJoined callback for existing users
         options.onUserJoined?.(remoteUser.userId)
         
-        // If user has video, try to subscribe
-        if (remoteUser.videoTrack) {
-          try {
-            console.log('[RTC] Subscribing to existing user video:', remoteUser.userId)
-            const track = await client.subscribe(remoteUser.userId, 'video')
-            console.log('[RTC] Subscribe result for existing user:', track)
-            
+        // Try to subscribe to video for all existing users (SDK may not return videoTrack directly)
+        try {
+          console.log('[RTC] Subscribing to existing user video:', remoteUser.userId)
+          const track = await client.subscribe(remoteUser.userId, 'video')
+          console.log('[RTC] Subscribe result for existing user:', track)
+          
+          if (track) {
             setState((prev) => {
               const next = new Map(prev.remoteUsers)
               const existing = next.get(remoteUser.userId)
               if (existing) {
-                existing.videoTrack = track || remoteUser.videoTrack
+                existing.videoTrack = track
                 existing.videoOff = false
                 next.set(remoteUser.userId, existing)
               }
               return { ...prev, remoteUsers: next }
             })
-          } catch (err) {
-            console.error('[RTC] Failed to subscribe to existing user video:', err)
           }
+        } catch (err) {
+          console.log('[RTC] No video available for existing user:', remoteUser.userId, err)
         }
         
-        // If user has audio, try to subscribe MCU
-        if (remoteUser.audioTrack && !mcuAudioSubscribed.current) {
-          mcuAudioSubscribed.current = true
-          try {
-            const audioTrack = await client.subscribe('mcu', 'audio')
-            audioTrack.play()
-          } catch (audioErr) {
-            console.error('Failed to subscribe MCU audio:', audioErr)
-            mcuAudioSubscribed.current = false
+        // Try to subscribe to audio for all existing users
+        try {
+          console.log('[RTC] Subscribing to existing user audio:', remoteUser.userId)
+          const audioTrack = await client.subscribe(remoteUser.userId, 'audio')
+          console.log('[RTC] Audio subscribe result for existing user:', audioTrack)
+          
+          if (audioTrack) {
+            setState((prev) => {
+              const next = new Map(prev.remoteUsers)
+              const existing = next.get(remoteUser.userId)
+              if (existing) {
+                existing.audioTrack = audioTrack
+                existing.audioMuted = false
+                next.set(remoteUser.userId, existing)
+              }
+              return { ...prev, remoteUsers: next }
+            })
           }
+        } catch (err) {
+          console.log('[RTC] No audio available for existing user:', remoteUser.userId, err)
         }
       }
     }
@@ -338,6 +458,13 @@ export function useRTC(options: UseRTCOptions) {
   const leave = useCallback(async () => {
     stopAudioLevelMonitor()
 
+    // Clear speaking timeouts
+    speakingTimeoutRef.current.forEach((timeout) => {
+      clearTimeout(timeout)
+    })
+    speakingTimeoutRef.current.clear()
+    setSpeakingUsers(new Set())
+
     const client = clientRef.current
     clientRef.current = null // 先置空防止重复调用
 
@@ -375,20 +502,24 @@ export function useRTC(options: UseRTCOptions) {
 
     try {
       if (muted) {
-        if (typeof track.setEnabled === 'function') {
-          await track.setEnabled(true)
-        } else if (typeof track.unmute === 'function') {
+        // Unmute
+        if (typeof track.unmute === 'function') {
           await track.unmute()
+        } else if (typeof track.setEnabled === 'function') {
+          await track.setEnabled(true)
         }
         setMuted(false)
+        console.log('[RTC] Unmuted audio')
       } else {
-        if (typeof track.setEnabled === 'function') {
-          await track.setEnabled(false)
-        } else if (typeof track.mute === 'function') {
+        // Mute
+        if (typeof track.mute === 'function') {
           await track.mute()
+        } else if (typeof track.setEnabled === 'function') {
+          await track.setEnabled(false)
         }
         setMuted(true)
         setAudioLevel(0)
+        console.log('[RTC] Muted audio')
       }
     } catch (err) {
       console.error('Toggle mute error:', err)
@@ -406,8 +537,23 @@ export function useRTC(options: UseRTCOptions) {
     setVideoEnabled(newState)
 
     try {
-      if (typeof track.setEnabled === 'function') {
-        await track.setEnabled(newState)
+      // Use mute/unmute methods if available (these notify other users)
+      if (newState) {
+        // Enable video
+        if (typeof track.unmute === 'function') {
+          await track.unmute()
+        } else if (typeof track.setEnabled === 'function') {
+          await track.setEnabled(true)
+        }
+        console.log('[RTC] Unmuted video')
+      } else {
+        // Disable video
+        if (typeof track.mute === 'function') {
+          await track.mute()
+        } else if (typeof track.setEnabled === 'function') {
+          await track.setEnabled(false)
+        }
+        console.log('[RTC] Muted video')
       }
     } catch (err) {
       // 失败时回滚
@@ -452,6 +598,7 @@ export function useRTC(options: UseRTCOptions) {
     audioLevel,
     hasCamera,
     hasMic,
+    speakingUsers,
     join,
     publish,
     leave,
