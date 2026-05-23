@@ -46,6 +46,7 @@ export default function RoomPage() {
   const [callCollapsed, setCallCollapsed] = useState(false)
   const [subtitleFontSize, setSubtitleFontSize] = useState<'sm'|'base'|'lg'>('base')
   const [subtitleEnabled, setSubtitleEnabled] = useState(true)
+  const [showSubtitlePanel, setShowSubtitlePanel] = useState(false)
   const [rtcReconnecting, setRtcReconnecting] = useState(false)
   const [rtcRetryCount, setRtcRetryCount] = useState(0)
   const [sendFailed, setSendFailed] = useState<Map<number, string>>(new Map())
@@ -904,44 +905,61 @@ export default function RoomPage() {
           leavingCall={leavingCall}
           localUserId={user?.id}
           playRemoteVideo={rtc.playRemoteVideo}
-          liveTranslateEnabled={liveTranslate.enabled}
-          liveTranslateLoading={liveTranslate.isTranslating}
-          onToggleLiveTranslate={() => {
-            // Get first remote user's audio track for translation
+          publishStats={publishStats}
+          speakingUsers={rtc.speakingUsers}
+        />
+      )}
+
+      {/* Floating Translate Button - Always visible */}
+      {!showSubtitlePanel && (
+        <button
+          onClick={() => setShowSubtitlePanel(true)}
+          className="fixed bottom-20 right-4 md:bottom-4 z-50 flex items-center justify-center h-12 w-12 rounded-full bg-purple-600 text-white shadow-lg hover:bg-purple-700 transition-all hover:scale-105"
+          title="打开同传翻译"
+        >
+          <IconTranslate size={20} />
+          {liveTranslate.enabled && (
+            <span className="absolute -top-1 -right-1 h-3 w-3 rounded-full bg-green-400 animate-pulse" />
+          )}
+        </button>
+      )}
+
+      {/* Subtitle Panel - Fixed position */}
+      {showSubtitlePanel && (
+        <SubtitlePanel
+          subtitles={subtitles}
+          participants={Array.from(inCallUsers.entries()).map(([userId, data]) => ({
+            user_id: userId,
+            nickname: data.nickname,
+            avatar_url: data.avatar_url || null
+          }))}
+          subtitleFontSize={subtitleFontSize}
+          isTranslating={liveTranslate.enabled}
+          inCall={inCall}
+          debugInfo={liveTranslate.debugInfo}
+          onClose={() => setShowSubtitlePanel(false)}
+          onToggleTranslate={async () => {
+            // Try to get individual user audio track first
             let remoteAudioTrack: any = null
             rtc.remoteUsers.forEach((user) => {
               if (user.audioTrack && !remoteAudioTrack) {
                 remoteAudioTrack = user.audioTrack
               }
             })
-            liveTranslate.toggle(remoteAudioTrack)
+            
+            // Fall back to MCU audio track if no individual track
+            if (!remoteAudioTrack && rtc.mcuAudioTrack) {
+              remoteAudioTrack = rtc.mcuAudioTrack
+              console.log('[Page] Using MCU audio track for translation')
+            }
+            
+            const success = await liveTranslate.toggle(remoteAudioTrack)
+            if (!success) {
+              toast('error', '同传翻译启动失败，请检查麦克风权限或确保通话中有其他参与者')
+            }
           }}
-          publishStats={publishStats}
-          speakingUsers={rtc.speakingUsers}
         />
       )}
-
-      {/* Subtitle Panel - Fixed position */}
-      <SubtitlePanel
-        subtitles={subtitles}
-        participants={Array.from(inCallUsers.entries()).map(([userId, data]) => ({
-          user_id: userId,
-          nickname: data.nickname,
-          avatar_url: data.avatar_url || null
-        }))}
-        subtitleFontSize={subtitleFontSize}
-        enabled={liveTranslate.enabled}
-        onToggle={() => {
-          let remoteAudioTrack: any = null
-          rtc.remoteUsers.forEach((user) => {
-            if (user.audioTrack && !remoteAudioTrack) {
-              remoteAudioTrack = user.audioTrack
-            }
-          })
-          liveTranslate.toggle(remoteAudioTrack)
-        }}
-        onClose={() => liveTranslate.stopCapture()}
-      />
 
       {/* Messages */}
       <div ref={containerRef} className="flex-1 overflow-auto p-4" style={{ background: 'var(--surface-bg)' }}>

@@ -7,6 +7,7 @@ interface RTCState {
   localAudioTrack: any | null
   localVideoTrack: any | null
   remoteUsers: Map<string, { audioTrack: any; videoTrack: any; audioMuted: boolean; videoOff: boolean }>
+  mcuAudioTrack: any | null
 }
 
 interface UseRTCOptions {
@@ -28,6 +29,7 @@ export function useRTC(options: UseRTCOptions) {
     localAudioTrack: null,
     localVideoTrack: null,
     remoteUsers: new Map(),
+    mcuAudioTrack: null,
   })
   const [muted, setMuted] = useState(false)
   const [videoEnabled, setVideoEnabled] = useState(true)
@@ -189,18 +191,32 @@ export function useRTC(options: UseRTCOptions) {
             return { ...prev, remoteUsers: next }
           })
         } else if (mediaType === 'audio') {
+          // Subscribe to individual user audio for live translation
+          let userAudioTrack = null
+          try {
+            userAudioTrack = await client.subscribe(user.userId, mediaType)
+            console.log('[RTC] Subscribed to user audio:', user.userId)
+          } catch (audioErr) {
+            console.log('[RTC] Failed to subscribe to user audio:', user.userId, audioErr)
+          }
+          
           setState((prev) => {
             const next = new Map(prev.remoteUsers)
             const existing = next.get(user.userId) || { audioTrack: null, videoTrack: null, audioMuted: false, videoOff: false }
+            existing.audioTrack = userAudioTrack || existing.audioTrack
             existing.audioMuted = false
             next.set(user.userId, existing)
             return { ...prev, remoteUsers: next }
           })
+          
           if (!mcuAudioSubscribed.current) {
             mcuAudioSubscribed.current = true
             try {
               const audioTrack = await client.subscribe('mcu', 'audio')
               audioTrack.play()
+              console.log('[RTC] MCU audio subscribed and playing')
+              // Store MCU audio track for live translation
+              setState(prev => ({ ...prev, mcuAudioTrack: audioTrack }))
             } catch (audioErr) {
               console.error('Failed to subscribe MCU audio:', audioErr)
               mcuAudioSubscribed.current = false
@@ -493,6 +509,7 @@ export function useRTC(options: UseRTCOptions) {
       localAudioTrack: null,
       localVideoTrack: null,
       remoteUsers: new Map(),
+      mcuAudioTrack: null,
     })
   }, [stopAudioLevelMonitor])
 

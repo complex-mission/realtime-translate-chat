@@ -47,9 +47,6 @@ interface CallAreaProps {
   leavingCall: boolean
   localUserId?: number
   playRemoteVideo: (userId: string, elementOrId: string | HTMLElement) => void
-  liveTranslateEnabled: boolean
-  liveTranslateLoading: boolean
-  onToggleLiveTranslate: () => void
   publishStats?: any
   speakingUsers?: Set<string>
 }
@@ -74,9 +71,6 @@ export default function CallArea({
   leavingCall,
   localUserId,
   playRemoteVideo,
-  liveTranslateEnabled,
-  liveTranslateLoading,
-  onToggleLiveTranslate,
   publishStats,
   speakingUsers,
 }: CallAreaProps) {
@@ -275,9 +269,6 @@ export default function CallArea({
         >
           <span className="inline-block h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
           通话中 ({participants.length}人)
-          {liveTranslateEnabled && (
-            <span className="text-xs text-purple-500 font-normal">· 同传中</span>
-          )}
           <svg
             className={`h-4 w-4 text-blue-600 transition-transform ${collapsed ? '' : 'rotate-180'}`}
             viewBox="0 0 24 24"
@@ -320,19 +311,6 @@ export default function CallArea({
             ) : (
               <IconVideoOff size={15} />
             )}
-          </button>
-          <button
-            onClick={onToggleLiveTranslate}
-            disabled={liveTranslateLoading}
-            className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
-              liveTranslateEnabled
-                ? 'bg-purple-500 text-white hover:bg-purple-600'
-                : 'bg-white text-slate-600 hover:bg-slate-100'
-            } ${liveTranslateLoading ? 'opacity-70 cursor-not-allowed' : ''}`}
-            style={{ border: liveTranslateEnabled ? 'none' : '1px solid var(--border-color)' }}
-            title={liveTranslateEnabled ? '关闭同传' : '开启同传'}
-          >
-            {liveTranslateLoading ? <IconSpinner size={15} /> : <IconTranslate size={15} />}
           </button>
           <button
             onClick={onLeave}
