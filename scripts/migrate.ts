@@ -1,12 +1,12 @@
 import mysql from 'mysql2/promise'
 export async function migrate() {
+  const db = process.env.DB_NAME||'rt_translate'
   const conn = await mysql.createConnection({
     host: process.env.DB_HOST||'127.0.0.1', port: parseInt(process.env.DB_PORT||'3306'),
-    user: process.env.DB_USER||'root', password: process.env.DB_PASSWORD||'', multipleStatements: true, charset: 'utf8mb4',
+    user: process.env.DB_USER||'root', password: process.env.DB_PASSWORD||'', database: db, multipleStatements: true, charset: 'utf8mb4',
   })
-  const db = process.env.DB_NAME||'rt_translate'
-  await conn.execute('CREATE DATABASE IF NOT EXISTS \`'+db+'\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')
-  await conn.execute('USE \`'+db+'\`')
+  await conn.query('CREATE DATABASE IF NOT EXISTS \`'+db+'\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')
+  await conn.query('USE \`'+db+'\`')
   console.log('Database "'+db+'" ready')
 
   await conn.execute(`CREATE TABLE IF NOT EXISTS users (
