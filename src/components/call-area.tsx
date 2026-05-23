@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { IconMic, IconMicOff, IconVideo, IconVideoOff, IconTranslate, IconSpinner } from '@/components/ui/icon'
 import SignedImage from '@/components/ui/signed-image'
 
@@ -66,38 +66,83 @@ export default function CallArea({
   onToggleLiveTranslate,
 }: CallAreaProps) {
   const localVideoRef = useRef<HTMLDivElement>(null)
+  const videoPlayTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
 
+  // Function to safely play remote video with retry
+  const safePlayRemoteVideo = useCallback((userId: string, elementId: string) => {
+    const el = document.getElementById(elementId)
+    if (!el) return
+    
+    try {
+      playRemoteVideo(userId, elementId)
+    } catch (err) {
+      console.error('Failed to play remote video:', err)
+    }
+  }, [playRemoteVideo])
+
+  // Play local video when track is ready
   useEffect(() => {
     if (localVideoTrack && localVideoRef.current) {
-      localVideoTrack.play(localVideoRef.current)
+      try {
+        localVideoTrack.play(localVideoRef.current)
+      } catch (err) {
+        console.error('Failed to play local video:', err)
+      }
     }
   }, [localVideoTrack])
 
+  // Play remote videos when participants or remoteUsers change
   useEffect(() => {
-    remoteUsers.forEach((user, userId) => {
-      if (user.videoTrack) {
-        const el = document.getElementById(`remote-video-${userId}`)
-        if (el) {
-          playRemoteVideo(userId, `remote-video-${userId}`)
-        }
+    // Clear existing timers
+    videoPlayTimersRef.current.forEach(timer => clearTimeout(timer))
+    videoPlayTimersRef.current.clear()
+
+    // Schedule video playback with small delays to ensure DOM is ready
+    participants.forEach((p, index) => {
+      if (p.user_id === localUserId) return
+      
+      const remoteUserId = `user_${p.user_id}`
+      const remoteUser = remoteUsers.get(remoteUserId)
+      
+      if (remoteUser?.videoTrack) {
+        // Use setTimeout to stagger video playback and ensure DOM is ready
+        const timer = setTimeout(() => {
+          safePlayRemoteVideo(remoteUserId, `remote-video-${remoteUserId}`)
+        }, 50 * (index + 1)) // Stagger by 50ms per participant
+        
+        videoPlayTimersRef.current.set(remoteUserId, timer)
       }
     })
-  }, [remoteUsers, playRemoteVideo])
 
-  // 展开时重新播放视频（收起时 DOM 被移除，需要重新挂载）
+    return () => {
+      videoPlayTimersRef.current.forEach(timer => clearTimeout(timer))
+      videoPlayTimersRef.current.clear()
+    }
+  }, [participants, remoteUsers, localUserId, safePlayRemoteVideo])
+
+  // Expand/collapse handler - replay videos when expanding
   useEffect(() => {
     if (!collapsed) {
-      // 等待 DOM 渲染完成
+      // Wait for DOM to render
       requestAnimationFrame(() => {
-        if (localVideoTrack && localVideoRef.current) {
-          localVideoTrack.play(localVideoRef.current)
-        }
-        remoteUsers.forEach((user, userId) => {
-          if (user.videoTrack) {
-            const el = document.getElementById(`remote-video-${userId}`)
-            if (el) {
-              playRemoteVideo(userId, `remote-video-${userId}`)
+        requestAnimationFrame(() => {
+          try {
+            if (localVideoTrack && localVideoRef.current) {
+              localVideoTrack.play(localVideoRef.current)
             }
+            
+            participants.forEach((p) => {
+              if (p.user_id === localUserId) return
+              
+              const remoteUserId = `user_${p.user_id}`
+              const remoteUser = remoteUsers.get(remoteUserId)
+              
+              if (remoteUser?.videoTrack) {
+                safePlayRemoteVideo(remoteUserId, `remote-video-${remoteUserId}`)
+              }
+            })
+          } catch (err) {
+            console.error('Failed to play videos on expand:', err)
           }
         })
       })

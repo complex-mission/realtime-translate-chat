@@ -32,6 +32,7 @@ export default function RoomPage() {
   const [sending, setSending] = useState(false)
   const [inCall, setInCall] = useState(false)
   const [callSid, setCallSid] = useState<number | null>(null)
+  const [inCallUsers, setInCallUsers] = useState<Map<number, { nickname: string; joinedAt: number }>>(new Map())
   const [subtitles, setSubtitles] = useState<Map<number, { text: string; translated: string; targetLang?: string }>>(new Map())
   const [showSummary, setShowSummary] = useState(false)
   const [summaryContent, setSummaryContent] = useState('')
@@ -254,9 +255,25 @@ export default function RoomPage() {
       })
     })
     const u3 = on('call:started', (d: any) => setCallSid(d.call_session_id))
-    const u4 = on('call:ended', () => { setInCall(false); setCallSid(null); setSubtitles(new Map()) })
+    const u4 = on('call:ended', () => { setInCall(false); setCallSid(null); setSubtitles(new Map()); setInCallUsers(new Map()) })
     const u5 = on('room:closed', () => { toast('warning', '聊天室已被关闭'); setTimeout(() => router.push('/chat'), 2000) })
-    return () => { u1(); u2(); u3(); u4(); u5() }
+    const u6 = on('call:participant_joined', (d: any) => {
+      // Add user to inCallUsers
+      setInCallUsers(prev => {
+        const next = new Map(prev)
+        next.set(d.user_id, { nickname: d.nickname, joinedAt: Date.now() })
+        return next
+      })
+    })
+    const u7 = on('call:participant_left', (d: any) => {
+      // Remove user from inCallUsers
+      setInCallUsers(prev => {
+        const next = new Map(prev)
+        next.delete(d.user_id)
+        return next
+      })
+    })
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7() }
   }, [socket, rid, callSid, on, user?.lang_pref])
 
   const scrollToBottom = useCallback(() => {
@@ -487,6 +504,13 @@ export default function RoomPage() {
           setCallSid(d.data.call_session_id)
           setRtcReconnecting(false)
 
+          // Add self to inCallUsers
+          setInCallUsers(prev => {
+            const next = new Map(prev)
+            next.set(user.id, { nickname: user.nickname, joinedAt: Date.now() })
+            return next
+          })
+
           // Join RTC channel
           try {
             const channelId = d.data.rtc_channel || 'room_' + rid
@@ -529,6 +553,7 @@ export default function RoomPage() {
       await fetch('/api/v1/rooms/' + rid + '/call/leave', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })
       setInCall(false); setCallSid(null)
       setSubtitles(new Map())
+      setInCallUsers(new Map())
       toast('success', '已退出通话')
     } finally { setLeavingCall(false) }
   }
@@ -643,9 +668,11 @@ export default function RoomPage() {
       {/* Call area */}
       {inCall && (
         <CallArea
-          participants={(room.members || []).filter((m: any) =>
-            m.user_id === user?.id || rtc.remoteUsers.has(`user_${m.user_id}`)
-          )}
+          participants={Array.from(inCallUsers.entries()).map(([userId, data]) => ({
+            user_id: userId,
+            nickname: data.nickname,
+            avatar_url: null
+          }))}
           remoteUsers={rtc.remoteUsers}
           localVideoTrack={rtc.localVideoTrack}
           muted={rtc.muted}

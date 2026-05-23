@@ -116,6 +116,9 @@ export function useRTC(options: UseRTCOptions) {
     const DingRTC = DingRTCRef.current
     if (!DingRTC) throw new Error('DingRTC not loaded')
 
+    // Reset MCU audio subscription state before joining
+    mcuAudioSubscribed.current = false
+
     const client = DingRTC.createClient()
     clientRef.current = client
 
@@ -141,8 +144,13 @@ export function useRTC(options: UseRTCOptions) {
           })
           if (!mcuAudioSubscribed.current) {
             mcuAudioSubscribed.current = true
-            const audioTrack = await client.subscribe('mcu', 'audio')
-            audioTrack.play()
+            try {
+              const audioTrack = await client.subscribe('mcu', 'audio')
+              audioTrack.play()
+            } catch (audioErr) {
+              console.error('Failed to subscribe MCU audio:', audioErr)
+              mcuAudioSubscribed.current = false
+            }
           }
         }
         options.onUserPublished?.(user.userId, mediaType)
@@ -196,7 +204,6 @@ export function useRTC(options: UseRTCOptions) {
     })
 
     setState((prev) => ({ ...prev, joined: true }))
-    mcuAudioSubscribed.current = false
     return response
   }, [options])
 
@@ -334,7 +341,11 @@ export function useRTC(options: UseRTCOptions) {
   const playRemoteVideo = useCallback((userId: string, elementId: string) => {
     const user = state.remoteUsers.get(userId)
     if (user?.videoTrack) {
-      user.videoTrack.play(elementId)
+      try {
+        user.videoTrack.play(elementId)
+      } catch (err) {
+        console.error('Failed to play remote video:', err)
+      }
     }
   }, [state])
 
