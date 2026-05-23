@@ -26,7 +26,7 @@ const pool = new Proxy({} as mysql.Pool, {
 
 export default pool
 export async function query<T = any>(sql: string, params?: any[]): Promise<T[]> {
-  const [rows] = await getPool().execute(sql, params); return rows as T[]
+  const [rows] = await getPool().query(sql, params); return rows as T[]
 }
 export async function queryOne<T = any>(sql: string, params?: any[]): Promise<T | null> {
   const rows = await query<T>(sql, params); return rows[0] || null
