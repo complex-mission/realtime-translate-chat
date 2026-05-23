@@ -1,18 +1,29 @@
 'use client'
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { IconTranslate, IconX, IconSpinner } from '@/components/ui/icon'
 import SignedImage from '@/components/ui/signed-image'
 import type { DebugInfo } from '@/hooks/useLiveTranslate'
 
+interface SubtitleEntry {
+  id: number
+  userId: number
+  translated: string
+  targetLang?: string
+  timestamp: number
+}
+
 interface SubtitlePanelProps {
-  subtitles: Map<number, { text: string; translated: string; targetLang?: string }>
+  subtitles: SubtitleEntry[]
   participants: { user_id: number; nickname: string; avatar_url?: string | null }[]
   subtitleFontSize: 'sm' | 'base' | 'lg'
   isTranslating: boolean
   inCall: boolean
   debugInfo: DebugInfo
+  hasMore: boolean
+  loading: boolean
   onClose: () => void
   onToggleTranslate: () => void
+  onLoadMore: () => void
 }
 
 export default function SubtitlePanel({
@@ -22,16 +33,77 @@ export default function SubtitlePanel({
   isTranslating,
   inCall,
   debugInfo,
+  hasMore,
+  loading,
   onClose,
-  onToggleTranslate
+  onToggleTranslate,
+  onLoadMore
 }: SubtitlePanelProps) {
   const [minimized, setMinimized] = useState(false)
   const [showDebug, setShowDebug] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const prevSubtitlesLengthRef = useRef(0)
+  const isLoadingMoreRef = useRef(false)
+  const scrollHeightBeforeRef = useRef(0)
+
+  // Handle scroll to load more
+  const handleScroll = () => {
+    const el = scrollRef.current
+    if (!el || loading || !hasMore || isLoadingMoreRef.current) return
+    
+    // Load more when scrolled to top (within 100px)
+    if (el.scrollTop < 100) {
+      scrollHeightBeforeRef.current = el.scrollHeight
+      isLoadingMoreRef.current = true
+      onLoadMore()
+    }
+  }
+
+  // Maintain scroll position after loading more
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    
+    if (subtitles.length > prevSubtitlesLengthRef.current) {
+      if (isLoadingMoreRef.current) {
+        // We just loaded more older translations - maintain position
+        const scrollHeightAfter = el.scrollHeight
+        const heightDiff = scrollHeightAfter - scrollHeightBeforeRef.current
+        el.scrollTop = el.scrollTop + heightDiff
+        isLoadingMoreRef.current = false
+        scrollHeightBeforeRef.current = 0
+      } else if (prevSubtitlesLengthRef.current === 0) {
+        // Initial load - scroll to bottom
+        setTimeout(() => {
+          el.scrollTop = el.scrollHeight
+        }, 50)
+      }
+    }
+    
+    prevSubtitlesLengthRef.current = subtitles.length
+  }, [subtitles.length])
+
+  // Reset isLoadingMoreRef when loading completes
+  useEffect(() => {
+    if (!loading) {
+      // isLoadingMoreRef.current = false
+    }
+  }, [loading])
+
+  // Get participant info for a userId
+  const getParticipant = (userId: number) => {
+    return participants.find(p => p.user_id === userId)
+  }
+
+  // Format timestamp
+  const formatTime = (timestamp: number) => {
+    return new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  }
 
   return (
     <div 
       className="fixed bottom-20 right-4 md:bottom-4 z-50"
-      style={{ maxHeight: minimized ? '48px' : '500px', width: '320px' }}
+      style={{ maxHeight: minimized ? '48px' : '70vh', width: '350px' }}
     >
       {/* Header */}
       <div 
@@ -48,9 +120,9 @@ export default function SubtitlePanel({
               翻译中
             </span>
           )}
-          {!isTranslating && subtitles.size > 0 && (
+          {!isTranslating && subtitles.length > 0 && (
             <span className="bg-purple-500 text-xs px-1.5 py-0.5 rounded-full">
-              {subtitles.size}
+              {subtitles.length}
             </span>
           )}
         </div>
@@ -99,13 +171,13 @@ export default function SubtitlePanel({
 
       {/* Debug Info */}
       {!minimized && showDebug && (
-        <div className="bg-gray-900 text-green-400 px-3 py-2 text-[10px] font-mono overflow-auto" style={{ maxHeight: '150px' }}>
+        <div className="bg-gray-900 text-green-400 px-3 py-2 text-[10px] font-mono overflow-auto" style={{ maxHeight: '120px' }}>
           <div className="text-yellow-400 mb-1">-- Debug Info --</div>
           <div>Status: {debugInfo.status}</div>
           <div>Source: {debugInfo.audioSource}</div>
-          <div>Chunks: {debugInfo.chunksReceived} (last: {debugInfo.lastChunkSize}b)</div>
-          {debugInfo.lastApiCall && <div>API Call: {debugInfo.lastApiCall}</div>}
-          {debugInfo.lastApiResult && <div>API Result: {debugInfo.lastApiResult}</div>}
+          <div>Chunks: {debugInfo.chunksReceived}</div>
+          <div>Audio Level: {debugInfo.audioLevel}</div>
+          <div>Silence: {debugInfo.silenceDetected ? 'Yes' : 'No'}</div>
           {debugInfo.lastError && <div className="text-red-400">Error: {debugInfo.lastError}</div>}
         </div>
       )}
@@ -113,16 +185,16 @@ export default function SubtitlePanel({
       {/* Content */}
       {!minimized && (
         <div 
-          className="bg-white rounded-b-xl shadow-lg overflow-hidden"
+          className="bg-white rounded-b-xl shadow-lg overflow-hidden flex flex-col"
           style={{ 
             border: '1px solid #e9d5ff',
             borderTop: 'none',
-            maxHeight: showDebug ? '300px' : '350px'
+            maxHeight: showDebug ? 'calc(60vh - 120px)' : '60vh'
           }}
         >
           {/* Translate toggle button - only show when in call */}
           {inCall && (
-            <div className="px-3 py-2" style={{ borderBottom: '1px solid #f3e8ff' }}>
+            <div className="px-3 py-2 border-b border-purple-100 flex-shrink-0">
               <button
                 onClick={(e) => { e.stopPropagation(); onToggleTranslate() }}
                 className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition ${
@@ -146,30 +218,58 @@ export default function SubtitlePanel({
             </div>
           )}
 
-          {/* Subtitles list */}
-          <div className="p-3 overflow-y-auto" style={{ maxHeight: inCall ? '290px' : '340px' }}>
-            {subtitles.size > 0 ? (
-              Array.from(subtitles.entries()).map(([userId, sub]) => {
-                const participant = participants.find(p => p.user_id === userId)
-                const nickname = participant?.nickname || `用户${userId}`
+          {/* Loading indicator */}
+          {loading && (
+            <div className="flex items-center justify-center py-2 text-purple-500 flex-shrink-0">
+              <IconSpinner size={14} className="mr-2" />
+              <span className="text-xs">加载历史记录...</span>
+            </div>
+          )}
+
+          {/* Subtitles list - scrollable */}
+          <div 
+            ref={scrollRef}
+            className="flex-1 overflow-y-auto p-3"
+            style={{ minHeight: '200px' }}
+            onScroll={handleScroll}
+          >
+            {/* Load more indicator */}
+            {hasMore && !loading && subtitles.length > 0 && (
+              <div className="text-center py-2 mb-2">
+                <button 
+                  onClick={onLoadMore}
+                  className="text-xs text-purple-500 hover:text-purple-700"
+                >
+                  ↑ 加载更早的翻译
+                </button>
+              </div>
+            )}
+            
+            {subtitles.length > 0 ? (
+              subtitles.map((entry) => {
+                const participant = getParticipant(entry.userId)
+                const nickname = participant?.nickname || `用户${entry.userId}`
                 
                 return (
-                  <div key={userId} className="mb-3 last:mb-0 pb-3" style={{ borderBottom: '1px solid #f3e8ff' }}>
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <div className="h-5 w-5 rounded-full overflow-hidden bg-purple-100 flex items-center justify-center">
-                        {participant?.avatar_url ? (
-                          <SignedImage src={participant.avatar_url} alt="" className="h-full w-full object-cover" />
-                        ) : (
-                          <span className="text-[9px] font-bold text-purple-600">{nickname[0]}</span>
-                        )}
+                  <div key={entry.id} className="mb-3 last:mb-0 pb-3" style={{ borderBottom: '1px solid #f3e8ff' }}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-5 w-5 rounded-full overflow-hidden bg-purple-100 flex items-center justify-center">
+                          {participant?.avatar_url ? (
+                            <SignedImage src={participant.avatar_url} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="text-[9px] font-bold text-purple-600">{nickname[0]}</span>
+                          )}
+                        </div>
+                        <span className="text-xs font-medium text-purple-600">{nickname}</span>
                       </div>
-                      <span className="text-xs font-medium text-purple-600">{nickname}</span>
+                      <span className="text-[10px] text-gray-400">{formatTime(entry.timestamp)}</span>
                     </div>
-                    {sub.translated && (
+                    {entry.translated && (
                       <p className={`font-medium pl-6 ${
                         subtitleFontSize === 'sm' ? 'text-xs' : subtitleFontSize === 'lg' ? 'text-base' : 'text-sm'
                       }`} style={{ color: 'var(--blue-hover)' }}>
-                        {sub.translated}
+                        {entry.translated}
                       </p>
                     )}
                   </div>

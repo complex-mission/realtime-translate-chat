@@ -37,7 +37,6 @@ interface CallAreaProps {
   audioLevel: number
   hasCamera: boolean | null
   hasMic: boolean | null
-  subtitles: Map<number, { text: string; translated: string; targetLang?: string }>
   subtitleFontSize: 'sm' | 'base' | 'lg'
   collapsed: boolean
   onToggleCollapse: () => void
@@ -61,7 +60,6 @@ export default function CallArea({
   audioLevel,
   hasCamera,
   hasMic,
-  subtitles,
   subtitleFontSize,
   collapsed,
   onToggleCollapse,

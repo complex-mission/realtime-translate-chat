@@ -7,6 +7,7 @@ interface LiveTranslateOptions {
   token: string | null
   socket: ReturnType<typeof useSocket>['socket']
   userLangPref: string
+  userId: number
   onSubtitle: (data: { userId: number; text: string; translated: string; isFinal: boolean; targetLang: string }) => void
 }
 
@@ -18,9 +19,17 @@ export interface DebugInfo {
   lastApiResult: string
   chunksReceived: number
   lastChunkSize: number
+  audioLevel: number
+  silenceDetected: boolean
 }
 
-export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtitle }: LiveTranslateOptions) {
+// Smart timing constants for meeting scenarios
+const MIN_RECORD_MS = 3000    // Minimum 3s before translating
+const MAX_RECORD_MS = 8000    // Maximum 8s before forcing translation
+const SILENCE_THRESHOLD = 0.02 // Audio level below this = silence
+const SILENCE_DURATION = 1500  // 1.5s of silence triggers translation
+
+export function useLiveTranslate({ roomId, token, socket, userLangPref, userId, onSubtitle }: LiveTranslateOptions) {
   const [enabled, setEnabled] = useState(false)
   const [isTranslating, setIsTranslating] = useState(false)
   const [debugInfo, setDebugInfo] = useState<DebugInfo>({
@@ -31,83 +40,24 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
     lastApiResult: '',
     chunksReceived: 0,
     lastChunkSize: 0,
+    audioLevel: 0,
+    silenceDetected: false,
   })
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const silenceCheckRef = useRef<NodeJS.Timeout | null>(null)
   const enabledRef = useRef(false)
   const remoteAudioStreamRef = useRef<MediaStream | null>(null)
   const chunksCountRef = useRef(0)
+  const recordingStartTimeRef = useRef<number>(0)
+  const lastSpeechTimeRef = useRef<number>(0)
+  const analyserRef = useRef<AnalyserNode | null>(null)
 
   const updateDebug = useCallback((updates: Partial<DebugInfo>) => {
     setDebugInfo(prev => ({ ...prev, ...updates }))
   }, [])
-
-  /**
-   * Convert audio blob to WAV format using Web Audio API
-   */
-  const convertToWav = useCallback(async (audioBlob: Blob): Promise<ArrayBuffer | null> => {
-    try {
-      updateDebug({ status: 'converting to wav...' })
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
-      const arrayBuffer = await audioBlob.arrayBuffer()
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
-      
-      // Convert to WAV
-      const numChannels = audioBuffer.numberOfChannels
-      const sampleRate = audioBuffer.sampleRate
-      const format = 1 // PCM
-      const bitDepth = 16
-      
-      const bytesPerSample = bitDepth / 8
-      const blockAlign = numChannels * bytesPerSample
-      const dataSize = audioBuffer.length * blockAlign
-      const bufferSize = 44 + dataSize
-      
-      const buffer = new ArrayBuffer(bufferSize)
-      const view = new DataView(buffer)
-      
-      // WAV header
-      writeString(view, 0, 'RIFF')
-      view.setUint32(4, bufferSize - 8, true)
-      writeString(view, 8, 'WAVE')
-      writeString(view, 12, 'fmt ')
-      view.setUint32(16, 16, true)
-      view.setUint16(20, format, true)
-      view.setUint16(22, numChannels, true)
-      view.setUint32(24, sampleRate, true)
-      view.setUint32(28, sampleRate * blockAlign, true)
-      view.setUint16(32, blockAlign, true)
-      view.setUint16(34, bitDepth, true)
-      writeString(view, 36, 'data')
-      view.setUint32(40, dataSize, true)
-      
-      // Write audio data
-      const channelData = []
-      for (let i = 0; i < numChannels; i++) {
-        channelData.push(audioBuffer.getChannelData(i))
-      }
-      
-      let offset = 44
-      for (let i = 0; i < audioBuffer.length; i++) {
-        for (let channel = 0; channel < numChannels; channel++) {
-          const sample = Math.max(-1, Math.min(1, channelData[channel][i]))
-          const int16 = sample < 0 ? sample * 0x8000 : sample * 0x7FFF
-          view.setInt16(offset, int16, true)
-          offset += 2
-        }
-      }
-      
-      await audioContext.close()
-      updateDebug({ status: 'wav converted, size: ' + bufferSize })
-      return buffer
-    } catch (err: any) {
-      console.error('[LiveTranslate] Failed to convert to WAV:', err)
-      updateDebug({ lastError: 'WAV convert failed: ' + err.message })
-      return null
-    }
-  }, [updateDebug])
 
   const startCapture = useCallback(async (remoteAudioTrack?: any) => {
     if (!token) {
@@ -121,61 +71,46 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       
       if (remoteAudioTrack) {
         updateDebug({ status: 'checking remote audio track...' })
-        console.log('[LiveTranslate] Remote audio track:', remoteAudioTrack)
-        console.log('[LiveTranslate] Track type:', typeof remoteAudioTrack)
-        console.log('[LiveTranslate] Track keys:', Object.keys(remoteAudioTrack || {}))
-        console.log('[LiveTranslate] Track prototype:', Object.getPrototypeOf(remoteAudioTrack))
         
         // Try to get MediaStreamTrack from remote audio track
         let mediaStreamTrack: MediaStreamTrack | null = null
         
-        // Method 1: getMediaStreamTrack()
         if (typeof remoteAudioTrack.getMediaStreamTrack === 'function') {
           try {
             mediaStreamTrack = remoteAudioTrack.getMediaStreamTrack()
             audioSource = 'remote (getMediaStreamTrack)'
-            console.log('[LiveTranslate] Got track via getMediaStreamTrack():', mediaStreamTrack)
           } catch (e) {
             console.log('[LiveTranslate] getMediaStreamTrack() failed:', e)
           }
         }
         
-        // Method 2: Direct MediaStreamTrack
         if (!mediaStreamTrack && remoteAudioTrack instanceof MediaStreamTrack) {
           mediaStreamTrack = remoteAudioTrack
           audioSource = 'remote (MediaStreamTrack)'
-          console.log('[LiveTranslate] Track is MediaStreamTrack instance')
         }
         
-        // Method 3: _mediaStreamTrack property
         if (!mediaStreamTrack && remoteAudioTrack._mediaStreamTrack) {
           mediaStreamTrack = remoteAudioTrack._mediaStreamTrack
           audioSource = 'remote (_mediaStreamTrack)'
-          console.log('[LiveTranslate] Got track from _mediaStreamTrack:', mediaStreamTrack)
         }
         
-        // Method 4: _track property
         if (!mediaStreamTrack && remoteAudioTrack._track) {
           mediaStreamTrack = remoteAudioTrack._track
           audioSource = 'remote (_track)'
-          console.log('[LiveTranslate] Got track from _track:', mediaStreamTrack)
         }
         
-        // Method 5: mediaStreamTrack property
         if (!mediaStreamTrack && remoteAudioTrack.mediaStreamTrack) {
           mediaStreamTrack = remoteAudioTrack.mediaStreamTrack
           audioSource = 'remote (mediaStreamTrack)'
-          console.log('[LiveTranslate] Got track from mediaStreamTrack:', mediaStreamTrack)
         }
         
-        // Method 6: Look for any property that looks like a MediaStreamTrack
+        // Look for any property that looks like a MediaStreamTrack
         if (!mediaStreamTrack) {
           for (const key of Object.keys(remoteAudioTrack)) {
             const val = remoteAudioTrack[key]
             if (val && typeof val === 'object' && typeof val.getSettings === 'function') {
               mediaStreamTrack = val
               audioSource = `remote (property: ${key})`
-              console.log(`[LiveTranslate] Found MediaStreamTrack in property '${key}':`, val)
               break
             }
           }
@@ -188,12 +123,11 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
         } else {
           audioSource = 'local mic (remote track failed)'
           updateDebug({ audioSource, status: 'remote track failed, trying local mic...' })
-          console.warn('[LiveTranslate] Could not extract MediaStreamTrack from remote audio track')
           try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true })
             remoteAudioStreamRef.current = stream
           } catch (micErr: any) {
-            updateDebug({ lastError: 'No audio source: remote track failed and no microphone (' + micErr.message + ')' })
+            updateDebug({ lastError: 'No audio source: ' + micErr.message })
             return false
           }
         }
@@ -209,6 +143,15 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
         }
       }
 
+      // Set up audio analyser for silence detection
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      audioContextRef.current = audioContext
+      const source = audioContext.createMediaStreamSource(stream)
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      analyserRef.current = analyser
+
       updateDebug({ status: 'creating MediaRecorder...' })
       const mimeType = 'audio/webm;codecs=opus'
       const supportedMime = MediaRecorder.isTypeSupported(mimeType) ? mimeType : 'audio/ogg;codecs=opus'
@@ -216,60 +159,50 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       const mediaRecorder = new MediaRecorder(stream, { mimeType: supportedMime })
       mediaRecorderRef.current = mediaRecorder
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data)
-          chunksCountRef.current++
-          updateDebug({ 
-            chunksReceived: chunksCountRef.current,
-            lastChunkSize: event.data.size,
-            status: 'recording... chunk #' + chunksCountRef.current
-          })
-        }
+      // Function to get current audio level
+      const getAudioLevel = (): number => {
+        if (!analyserRef.current) return 0
+        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount)
+        analyserRef.current.getByteFrequencyData(dataArray)
+        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length
+        return average / 255 // Normalize to 0-1
       }
 
-      mediaRecorder.onstop = async () => {
-        if (!enabledRef.current) {
-          updateDebug({ status: 'stopped (not enabled)' })
-          return
-        }
+      // Function to translate accumulated audio
+      const translateAccumulatedAudio = async () => {
+        if (!enabledRef.current) return
         
         const chunks = audioChunksRef.current
         audioChunksRef.current = []
+        recordingStartTimeRef.current = Date.now()
 
         if (chunks.length === 0) {
-          updateDebug({ status: 'no audio chunks' })
+          updateDebug({ status: 'no audio chunks, continuing...' })
           return
         }
 
-        updateDebug({ status: 'got ' + chunks.length + ' chunks, processing...' })
         const audioBlob = new Blob(chunks, { type: mediaRecorder.mimeType })
         
-        if (audioBlob.size < 1000) {
+        if (audioBlob.size < 500) {
           updateDebug({ status: 'audio too small: ' + audioBlob.size + ' bytes' })
           return
         }
 
-        // Convert to base64 with Data URL format
+        const duration = Date.now() - recordingStartTimeRef.current
+        updateDebug({ status: `translating ${Math.round(duration/1000)}s audio...` })
+
+        // Convert to base64
         const reader = new FileReader()
         reader.onloadend = async () => {
-          if (!enabledRef.current) {
-            updateDebug({ status: 'stopped (not enabled)' })
-            return
-          }
+          if (!enabledRef.current) return
           
           const base64data = reader.result as string
           const base64Audio = base64data.split(',')[1]
-          
-          // Determine format from mimeType
           const format = mediaRecorder.mimeType.includes('webm') ? 'webm' : 'ogg'
-          
-          // Use Data URL format as required by DashScope API
           const dataUrl = `data:audio/${format};base64,${base64Audio}`
           
           updateDebug({ 
-            status: 'calling API...',
-            lastApiCall: format + ' size: ' + audioBlob.size + ', base64: ' + base64Audio.length
+            lastApiCall: `${format} ${Math.round(duration/1000)}s, ${audioBlob.size}b`
           })
 
           try {
@@ -287,17 +220,11 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
             })
 
             const data = await res.json()
-            console.log('[LiveTranslate] API response:', data)
             
             updateDebug({ 
-              lastApiResult: JSON.stringify(data).substring(0, 200),
-              status: data.success ? 'success' : 'api returned no translations'
+              lastApiResult: JSON.stringify(data).substring(0, 150),
+              status: data.success ? 'translation received!' : 'api returned no translations'
             })
-
-            if (!res.ok) {
-              updateDebug({ lastError: 'API error: ' + res.status })
-              return
-            }
 
             if (data.success && data.data?.translations) {
               const translatedText = data.data.translations[userLangPref] || 
@@ -305,22 +232,16 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
                                      Object.values(data.data.translations)[0]
 
               if (translatedText) {
-                updateDebug({ status: 'translation received!' })
                 onSubtitle({
-                  userId: 0,
+                  userId: userId,
                   text: '',
                   translated: translatedText as string,
                   isFinal: true,
                   targetLang: userLangPref,
                 })
-              } else {
-                updateDebug({ lastError: 'no text in translations' })
               }
-            } else {
-              updateDebug({ lastError: 'no translations in response: ' + JSON.stringify(data).substring(0, 100) })
             }
           } catch (err: any) {
-            console.error('[LiveTranslate] Translation request failed:', err)
             updateDebug({ lastError: 'fetch error: ' + err.message })
           }
         }
@@ -328,20 +249,70 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
         reader.readAsDataURL(audioBlob)
       }
 
-      mediaRecorder.start(100)
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+          chunksCountRef.current++
+          lastSpeechTimeRef.current = Date.now()
+        }
+      }
+
+      // Start recording
+      mediaRecorder.start(200) // Collect chunks every 200ms
       chunksCountRef.current = 0
+      recordingStartTimeRef.current = Date.now()
+      lastSpeechTimeRef.current = Date.now()
+      
       updateDebug({ 
-        status: 'MediaRecorder started',
+        status: 'recording... (smart timing)',
         lastError: '',
         chunksReceived: 0
       })
-      
-      intervalRef.current = setInterval(() => {
-        if (mediaRecorder.state === 'recording') {
-          mediaRecorder.stop()
-          mediaRecorder.start(100)
+
+      // Smart timing: check audio level periodically
+      silenceCheckRef.current = setInterval(() => {
+        if (!enabledRef.current || mediaRecorder.state !== 'recording') return
+
+        const audioLevel = getAudioLevel()
+        const now = Date.now()
+        const recordingDuration = now - recordingStartTimeRef.current
+        const silenceDuration = now - lastSpeechTimeRef.current
+
+        updateDebug({ 
+          audioLevel: Math.round(audioLevel * 100) / 100,
+          silenceDetected: audioLevel < SILENCE_THRESHOLD
+        })
+
+        // Update last speech time if audio detected
+        if (audioLevel >= SILENCE_THRESHOLD) {
+          lastSpeechTimeRef.current = now
         }
-      }, 3000)
+
+        // Decision: should we translate now?
+        const shouldTranslate = 
+          // Rule 1: Minimum recording time reached AND silence detected
+          (recordingDuration >= MIN_RECORD_MS && silenceDuration >= SILENCE_DURATION) ||
+          // Rule 2: Maximum recording time reached (even if still speaking)
+          (recordingDuration >= MAX_RECORD_MS)
+
+        if (shouldTranslate && audioChunksRef.current.length > 0) {
+          updateDebug({ status: 'translating...' })
+          
+          // Stop and restart recorder
+          mediaRecorder.stop()
+          
+          // Translate after a small delay to ensure all chunks are collected
+          setTimeout(() => {
+            translateAccumulatedAudio()
+            // Restart recording
+            if (enabledRef.current && mediaRecorder.state !== 'recording') {
+              mediaRecorder.start(200)
+              recordingStartTimeRef.current = Date.now()
+              lastSpeechTimeRef.current = Date.now()
+            }
+          }, 100)
+        }
+      }, 200) // Check every 200ms
 
       setIsTranslating(false)
       return true
@@ -351,18 +322,29 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       setIsTranslating(false)
       return false
     }
-  }, [token, roomId, userLangPref, onSubtitle, convertToWav, updateDebug])
+  }, [token, roomId, userLangPref, onSubtitle, updateDebug])
 
   const stopCapture = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current)
       intervalRef.current = null
     }
+    if (silenceCheckRef.current) {
+      clearInterval(silenceCheckRef.current)
+      silenceCheckRef.current = null
+    }
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       try {
         mediaRecorderRef.current.stop()
       } catch {}
+    }
+
+    if (audioContextRef.current) {
+      try {
+        audioContextRef.current.close()
+      } catch {}
+      audioContextRef.current = null
     }
 
     if (remoteAudioStreamRef.current) {
@@ -372,8 +354,9 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
 
     mediaRecorderRef.current = null
     audioChunksRef.current = []
+    analyserRef.current = null
     setIsTranslating(false)
-    updateDebug({ status: 'stopped' })
+    updateDebug({ status: 'stopped', audioLevel: 0, silenceDetected: false })
   }, [updateDebug])
 
   const toggle = useCallback(async (remoteAudioTrack?: any): Promise<boolean> => {
@@ -384,7 +367,7 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
       setEnabled(false)
       return false
     } else {
-      // Start - don't set enabled until capture succeeds
+      // Start
       setIsTranslating(true)
       const success = await startCapture(remoteAudioTrack)
       if (success) {
@@ -411,11 +394,5 @@ export function useLiveTranslate({ roomId, token, socket, userLangPref, onSubtit
     toggle,
     startCapture,
     stopCapture,
-  }
-}
-
-function writeString(view: DataView, offset: number, str: string) {
-  for (let i = 0; i < str.length; i++) {
-    view.setUint8(offset + i, str.charCodeAt(i))
   }
 }

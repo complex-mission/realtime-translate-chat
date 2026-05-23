@@ -408,6 +408,19 @@ export function useRTC(options: UseRTCOptions) {
       }
     }
 
+    // Subscribe to MCU audio for live translation (even if no users have published audio yet)
+    if (!mcuAudioSubscribed.current) {
+      try {
+        const audioTrack = await client.subscribe('mcu', 'audio')
+        audioTrack.play()
+        console.log('[RTC] MCU audio subscribed during join')
+        setState(prev => ({ ...prev, mcuAudioTrack: audioTrack }))
+        mcuAudioSubscribed.current = true
+      } catch (audioErr) {
+        console.log('[RTC] MCU audio not available during join:', audioErr)
+      }
+    }
+
     setState((prev) => ({ ...prev, joined: true }))
     return response
   }, [options])

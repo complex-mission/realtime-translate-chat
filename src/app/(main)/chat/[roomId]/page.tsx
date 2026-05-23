@@ -35,7 +35,9 @@ export default function RoomPage() {
   const [inCall, setInCall] = useState(false)
   const [callSid, setCallSid] = useState<number | null>(null)
   const [inCallUsers, setInCallUsers] = useState<Map<number, { nickname: string; avatar_url?: string; joinedAt: number }>>(new Map())
-  const [subtitles, setSubtitles] = useState<Map<number, { text: string; translated: string; targetLang?: string }>>(new Map())
+  const [subtitles, setSubtitles] = useState<{ id: number; userId: number; translated: string; targetLang?: string; timestamp: number }[]>([])
+  const [hasMoreTranslations, setHasMoreTranslations] = useState(true)
+  const [loadingTranslations, setLoadingTranslations] = useState(false)
   const [showSummary, setShowSummary] = useState(false)
   const [summaryContent, setSummaryContent] = useState('')
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -128,12 +130,20 @@ export default function RoomPage() {
     roomId: rid,
     token,
     socket,
-    userLangPref: user?.lang_pref || 'zh', // 用户的语言偏好
+    userLangPref: user?.lang_pref || 'zh',
+    userId: user?.id || 0,
     onSubtitle: (data) => {
       setSubtitles(prev => {
-        const next = new Map(prev)
-        next.set(data.userId, { text: data.text, translated: data.translated, targetLang: data.targetLang })
-        return next
+        const newEntry = {
+          id: Date.now(),
+          userId: data.userId,
+          translated: data.translated,
+          targetLang: data.targetLang,
+          timestamp: Date.now()
+        }
+        // Keep last 200 translations for performance
+        const updated = [...prev, newEntry]
+        return updated.length > 200 ? updated.slice(-200) : updated
       })
     },
   })
@@ -180,33 +190,43 @@ export default function RoomPage() {
     } catch {}
   }, [rid, token])
 
-  const fetchLiveTranslations = useCallback(async () => {
+  const fetchLiveTranslations = useCallback(async (beforeId?: number) => {
     if (!token) return
+    setLoadingTranslations(true)
     try {
-      const r = await fetch('/api/v1/rooms/' + rid + '/live-translations?limit=20', { 
-        headers: { Authorization: 'Bearer ' + token } 
-      })
+      const url = beforeId 
+        ? `/api/v1/rooms/${rid}/live-translations?limit=50&before_id=${beforeId}`
+        : `/api/v1/rooms/${rid}/live-translations?limit=50`
+      const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } })
       const d = await r.json()
+      
       if (d.success && d.data) {
-        // Convert to subtitles format and add to existing subtitles
         const userLang = user?.lang_pref || 'zh'
-        setSubtitles(prev => {
-          const next = new Map(prev)
-          d.data.forEach((item: any) => {
-            const translatedText = item[`text_${userLang}`] || item.text_zh || item.text_en || item.text_ja
-            if (translatedText) {
-              next.set(item.user_id, {
-                text: '',
-                translated: translatedText,
-                targetLang: userLang
-              })
-            }
-          })
-          return next
-        })
+        const newTranslations = d.data.map((item: any) => ({
+          id: item.id,
+          userId: item.user_id,
+          translated: item[`text_${userLang}`] || item.text_zh || item.text_en || item.text_ja || '',
+          targetLang: userLang,
+          timestamp: new Date(item.created_at).getTime()
+        })).filter((t: any) => t.translated)
+        
+        // Reverse to show oldest first (API returns DESC)
+        newTranslations.reverse()
+        
+        if (beforeId) {
+          // Prepend older translations
+          setSubtitles(prev => [...newTranslations, ...prev])
+        } else {
+          // Initial load - replace
+          setSubtitles(newTranslations)
+        }
+        
+        setHasMoreTranslations(d.data.length >= 50)
       }
     } catch (err) {
       console.error('Failed to fetch live translations:', err)
+    } finally {
+      setLoadingTranslations(false)
     }
   }, [rid, token, user?.lang_pref])
 
@@ -236,6 +256,15 @@ export default function RoomPage() {
 
   useEffect(() => { fetchRoom(); fetchMessages(); fetchMembers() }, [fetchRoom, fetchMessages, fetchMembers])
   useEffect(() => { if (connected && rid) joinRoom(rid) }, [connected, rid, joinRoom])
+  
+  // Load translations when panel opens (only once)
+  const initialLoadDoneRef = useRef(false)
+  useEffect(() => {
+    if (showSubtitlePanel && !initialLoadDoneRef.current) {
+      initialLoadDoneRef.current = true
+      fetchLiveTranslations()
+    }
+  }, [showSubtitlePanel, fetchLiveTranslations])
 
   // 同步 ref 和 state
   useEffect(() => { loadingMoreRef.current = loadingMore }, [loadingMore])
@@ -328,7 +357,7 @@ export default function RoomPage() {
         } catch (e) {}
         setInCall(false)
         setCallSid(null)
-        setSubtitles(new Map())
+        setSubtitles([])
         setInCallUsers(new Map())
         setPublishStats(null)
       }
@@ -375,24 +404,16 @@ export default function RoomPage() {
         const translatedText = d.translations[userLang] || d.translations['zh'] || Object.values(d.translations)[0]
         
         if (translatedText) {
-          setSubtitles(p => {
-            const n = new Map(p)
-            n.set(d.user_id || 0, { 
-              text: '', 
-              translated: translatedText as string, 
-              targetLang: userLang 
-            })
-            
-            // Auto-remove after 10 seconds
-            setTimeout(() => {
-              setSubtitles(prev => {
-                const next = new Map(prev)
-                next.delete(d.user_id || 0)
-                return next
-              })
-            }, 10000)
-            
-            return n
+          setSubtitles(prev => {
+            const newEntry = {
+              id: Date.now(),
+              userId: d.user_id || 0,
+              translated: translatedText as string,
+              targetLang: userLang,
+              timestamp: Date.now()
+            }
+            const updated = [...prev, newEntry]
+            return updated.length > 200 ? updated.slice(-200) : updated
           })
         }
       } else {
@@ -401,32 +422,27 @@ export default function RoomPage() {
         if (d.target_lang && d.target_lang !== userLang) {
           return
         }
-        setSubtitles(p => {
-          const n = new Map(p)
-          n.set(d.user_id || 0, { text: d.text_original || '', translated: d.text_translated, targetLang: d.target_lang })
-          
-          if (d.is_final) {
-            setTimeout(() => {
-              setSubtitles(prev => {
-                const next = new Map(prev)
-                next.delete(d.user_id || 0)
-                return next
-              })
-            }, 5000)
+        setSubtitles(prev => {
+          const newEntry = {
+            id: Date.now(),
+            userId: d.user_id || 0,
+            translated: d.text_translated,
+            targetLang: d.target_lang,
+            timestamp: Date.now()
           }
-          
-          return n
+          const updated = [...prev, newEntry]
+          return updated.length > 200 ? updated.slice(-200) : updated
         })
       }
     })
     const u3 = on('call:started', (d: any) => setCallSid(d.call_session_id))
-    const u4 = on('call:ended', () => { setInCall(false); setCallSid(null); setSubtitles(new Map()); setInCallUsers(new Map()) })
+    const u4 = on('call:ended', () => { setInCall(false); setCallSid(null); setSubtitles([]); setInCallUsers(new Map()) })
     const u5 = on('room:closed', () => { toast('warning', '聊天室已被关闭'); setTimeout(() => router.push('/chat'), 2000) })
     const u6 = on('call:participant_joined', (d: any) => {
       // Add user to inCallUsers
       setInCallUsers(prev => {
         const next = new Map(prev)
-        next.set(d.user_id, { nickname: d.nickname, joinedAt: Date.now() })
+        next.set(d.user_id, { nickname: d.nickname, avatar_url: d.avatar_url, joinedAt: Date.now() })
         return next
       })
     })
@@ -765,7 +781,7 @@ export default function RoomPage() {
 
       await fetch('/api/v1/rooms/' + rid + '/call/leave', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })
       setInCall(false); setCallSid(null)
-      setSubtitles(new Map())
+      setSubtitles([])
       setInCallUsers(new Map())
       setPublishStats(null)
       toast('success', '已退出通话')
@@ -895,7 +911,6 @@ export default function RoomPage() {
           audioLevel={rtc.audioLevel}
           hasCamera={rtc.hasCamera}
           hasMic={rtc.hasMic}
-          subtitles={subtitles}
           subtitleFontSize={subtitleFontSize}
           collapsed={callCollapsed}
           onToggleCollapse={() => setCallCollapsed(!callCollapsed)}
@@ -928,16 +943,35 @@ export default function RoomPage() {
       {showSubtitlePanel && (
         <SubtitlePanel
           subtitles={subtitles}
-          participants={Array.from(inCallUsers.entries()).map(([userId, data]) => ({
-            user_id: userId,
-            nickname: data.nickname,
-            avatar_url: data.avatar_url || null
-          }))}
+          participants={[
+            // Current call participants
+            ...Array.from(inCallUsers.entries()).map(([userId, data]) => ({
+              user_id: userId,
+              nickname: data.nickname,
+              avatar_url: data.avatar_url || null
+            })),
+            // Room members (for historical translations)
+            ...(room?.members || [])
+              .filter((m: any) => !inCallUsers.has(m.user_id))
+              .map((m: any) => ({
+                user_id: m.user_id,
+                nickname: m.nickname,
+                avatar_url: m.avatar_url || null
+              }))
+          ]}
           subtitleFontSize={subtitleFontSize}
           isTranslating={liveTranslate.enabled}
           inCall={inCall}
           debugInfo={liveTranslate.debugInfo}
+          hasMore={hasMoreTranslations}
+          loading={loadingTranslations}
           onClose={() => setShowSubtitlePanel(false)}
+          onLoadMore={() => {
+            if (subtitles.length > 0) {
+              const oldest = subtitles[0]
+              fetchLiveTranslations(oldest.id)
+            }
+          }}
           onToggleTranslate={async () => {
             // Try to get individual user audio track first
             let remoteAudioTrack: any = null

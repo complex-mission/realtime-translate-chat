@@ -33,7 +33,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ roo
 
   await execute('INSERT IGNORE INTO call_participants (call_session_id,user_id) VALUES (?,?)', [csId, u.id])
   await execute('UPDATE call_sessions SET participant_count=participant_count+1 WHERE id=?', [csId])
-  emitToRoom(rid, 'call:participant_joined', { call_session_id: csId, user_id: u.id, nickname: u.nickname })
+  emitToRoom(rid, 'call:participant_joined', { call_session_id: csId, user_id: u.id, nickname: u.nickname, avatar_url: u.avatar_url })
 
   const { token, appId } = generateRtcToken(channelId, userId)
 

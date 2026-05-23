@@ -10,7 +10,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ room
   const rid = parseInt((await params).roomId)
   const { searchParams } = new URL(req.url)
   const limit = parseInt(searchParams.get('limit') || '50')
-  const before = searchParams.get('before') // timestamp for pagination
+  const beforeId = searchParams.get('before_id') // ID for pagination
 
   try {
     let sql = `SELECT id, room_id, user_id, source_lang, text_zh, text_en, text_ja, created_at 
@@ -18,12 +18,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ room
                WHERE room_id = ?`
     const params: any[] = [rid]
 
-    if (before) {
-      sql += ` AND created_at < ?`
-      params.push(before)
+    if (beforeId) {
+      sql += ` AND id < ?`
+      params.push(parseInt(beforeId))
     }
 
-    sql += ` ORDER BY created_at DESC LIMIT ?`
+    sql += ` ORDER BY id DESC LIMIT ?`
     params.push(limit)
 
     const translations = await query(sql, params)
