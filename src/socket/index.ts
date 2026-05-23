@@ -74,7 +74,54 @@ export function initSocket(server: HTTP) {
     // 断开连接
     s.on('disconnect', async () => {
       const cr = await redis.hget('user:online:' + u.id, 'currentRoom')
-      if (cr) await redis.srem('room:members:' + cr, String(u.id))
+      if (cr) {
+        await redis.srem('room:members:' + cr, String(u.id))
+        
+        // Check if user was in a call and handle leave
+        const callActive = await redis.get('call:active:' + cr)
+        if (callActive) {
+          const csId = parseInt(callActive)
+          // Mark user as left in the call
+          const { execute } = await import('@/lib/db')
+          await execute(
+            'UPDATE call_participants SET left_at=NOW() WHERE call_session_id=? AND user_id=? AND left_at IS NULL',
+            [csId, u.id]
+          )
+          // Broadcast participant left event
+          emitToRoom(parseInt(cr), 'call:participant_left', { 
+            call_session_id: csId, 
+            user_id: u.id 
+          })
+          
+          // Check if anyone is still in the call
+          const { queryOne } = await import('@/lib/db')
+          const cnt = await queryOne<any>(
+            'SELECT COUNT(*) as c FROM call_participants WHERE call_session_id=? AND left_at IS NULL',
+            [csId]
+          )
+          if (!cnt?.c) {
+            // End the call if no one is left
+            await execute("UPDATE call_sessions SET status='ended',ended_at=NOW() WHERE id=?", [csId])
+            await redis.del('call:active:' + cr)
+            const sr = await execute(
+              'INSERT INTO messages (room_id,sender_id,msg_type,content) VALUES (?,?,?,?)',
+              [parseInt(cr), u.id, 'system', '通话已结束']
+            )
+            emitToRoom(parseInt(cr), 'message:new', {
+              id: sr.insertId,
+              room_id: parseInt(cr),
+              sender_id: u.id,
+              msg_type: 'system',
+              content: '通话已结束',
+              created_at: new Date().toISOString()
+            })
+            emitToRoom(parseInt(cr), 'call:ended', {
+              call_session_id: csId,
+              ended_at: new Date().toISOString()
+            })
+          }
+        }
+      }
       await redis.del('user:online:' + u.id)
     })
   })

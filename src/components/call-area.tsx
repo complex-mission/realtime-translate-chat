@@ -35,10 +35,11 @@ interface CallAreaProps {
   onLeave: () => void
   leavingCall: boolean
   localUserId?: number
-  playRemoteVideo: (userId: string, elementId: string) => void
+  playRemoteVideo: (userId: string, elementOrId: string | HTMLElement) => void
   liveTranslateEnabled: boolean
   liveTranslateLoading: boolean
   onToggleLiveTranslate: () => void
+  publishStats?: any
 }
 
 export default function CallArea({
@@ -64,32 +65,111 @@ export default function CallArea({
   liveTranslateEnabled,
   liveTranslateLoading,
   onToggleLiveTranslate,
+  publishStats,
 }: CallAreaProps) {
   const localVideoRef = useRef<HTMLDivElement>(null)
   const videoPlayTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  const playedTracksRef = useRef<Set<string>>(new Set())
 
   // Function to safely play remote video with retry
-  const safePlayRemoteVideo = useCallback((userId: string, elementId: string) => {
+  const safePlayRemoteVideo = useCallback((userId: string, elementId: string, retryCount: number = 0) => {
+    const MAX_RETRIES = 15
+    
+    // Skip if already played successfully
+    const trackKey = `${userId}-played`
+    if (playedTracksRef.current.has(trackKey) && retryCount === 0) return
+    
     const el = document.getElementById(elementId)
-    if (!el) return
+    if (!el) {
+      // DOM not ready, retry with increasing delay
+      if (retryCount < MAX_RETRIES) {
+        const delay = Math.min(500 * Math.pow(1.5, retryCount), 3000)
+        console.log(`[CallArea] DOM not ready for ${elementId}, retry ${retryCount + 1}/${MAX_RETRIES} in ${delay}ms`)
+        const timer = setTimeout(() => {
+          safePlayRemoteVideo(userId, elementId, retryCount + 1)
+        }, delay)
+        videoPlayTimersRef.current.set(`${userId}-retry`, timer)
+      } else {
+        console.warn(`[CallArea] Max retries reached for ${elementId}`)
+      }
+      return
+    }
+    
+    // Check if element is actually in the document body
+    if (!document.body.contains(el)) {
+      console.log(`[CallArea] Element ${elementId} exists but not in DOM body, retrying...`)
+      if (retryCount < MAX_RETRIES) {
+        const timer = setTimeout(() => {
+          safePlayRemoteVideo(userId, elementId, retryCount + 1)
+        }, 500)
+        videoPlayTimersRef.current.set(`${userId}-retry`, timer)
+      }
+      return
+    }
     
     try {
-      playRemoteVideo(userId, elementId)
+      // Pass the element directly instead of the ID string
+      console.log(`[CallArea] Playing video for ${userId} into element:`, el)
+      playRemoteVideo(userId, el)
+      playedTracksRef.current.add(trackKey)
+      console.log(`[CallArea] Successfully started playing video for ${userId}`)
     } catch (err) {
-      console.error('Failed to play remote video:', err)
+      console.error('[CallArea] Failed to play remote video:', err)
+      // Retry on error
+      if (retryCount < MAX_RETRIES) {
+        const delay = Math.min(500 * Math.pow(1.5, retryCount), 3000)
+        const timer = setTimeout(() => {
+          safePlayRemoteVideo(userId, elementId, retryCount + 1)
+        }, delay)
+        videoPlayTimersRef.current.set(`${userId}-retry`, timer)
+      }
     }
   }, [playRemoteVideo])
 
   // Play local video when track is ready
   useEffect(() => {
     if (localVideoTrack && localVideoRef.current) {
-      try {
-        localVideoTrack.play(localVideoRef.current)
-      } catch (err) {
-        console.error('Failed to play local video:', err)
-      }
+      // Delay to ensure DOM is ready
+      const timer = setTimeout(() => {
+        try {
+          if (localVideoRef.current) {
+            localVideoTrack.play(localVideoRef.current)
+          }
+        } catch (err) {
+          console.error('Failed to play local video:', err)
+        }
+      }, 500)
+      return () => clearTimeout(timer)
     }
   }, [localVideoTrack])
+
+  // Clear played tracks when participants or remoteUsers change
+  useEffect(() => {
+    const currentIds = new Set(participants.map(p => p.user_id))
+    const keysToDelete: string[] = []
+    
+    playedTracksRef.current.forEach(key => {
+      const userIdPart = key.split('-')[0] // e.g., "user_1"
+      const numericId = parseInt(userIdPart.replace('user_', ''))
+      
+      // Remove if user no longer in participants
+      if (!currentIds.has(numericId)) {
+        keysToDelete.push(key)
+        return
+      }
+      
+      // Remove if user's videoTrack changed (re-join scenario)
+      const remoteUser = remoteUsers.get(userIdPart)
+      if (remoteUser && !remoteUser.videoTrack) {
+        keysToDelete.push(key)
+      }
+    })
+    
+    keysToDelete.forEach(key => {
+      console.log('[CallArea] Clearing played track cache:', key)
+      playedTracksRef.current.delete(key)
+    })
+  }, [participants, remoteUsers])
 
   // Play remote videos when participants or remoteUsers change
   useEffect(() => {
@@ -97,24 +177,42 @@ export default function CallArea({
     videoPlayTimersRef.current.forEach(timer => clearTimeout(timer))
     videoPlayTimersRef.current.clear()
 
-    // Schedule video playback with small delays to ensure DOM is ready
+    console.log('[CallArea] useEffect triggered - participants:', participants.length, 'remoteUsers:', remoteUsers.size)
+    
+    // Schedule video playback with delays to ensure DOM is ready
     participants.forEach((p, index) => {
-      if (p.user_id === localUserId) return
+      if (p.user_id === localUserId) {
+        console.log('[CallArea] Skipping local user:', p.user_id)
+        return
+      }
       
       const remoteUserId = `user_${p.user_id}`
       const remoteUser = remoteUsers.get(remoteUserId)
       
+      console.log(`[CallArea] Checking user ${remoteUserId}:`, {
+        hasVideoTrack: !!remoteUser?.videoTrack,
+        videoTrackType: typeof remoteUser?.videoTrack,
+        videoOff: remoteUser?.videoOff
+      })
+      
       if (remoteUser?.videoTrack) {
-        // Use setTimeout to stagger video playback and ensure DOM is ready
-        const timer = setTimeout(() => {
-          safePlayRemoteVideo(remoteUserId, `remote-video-${remoteUserId}`)
-        }, 50 * (index + 1)) // Stagger by 50ms per participant
+        // Use longer initial delay to ensure DOM is rendered
+        const initialDelay = 800 + (300 * index) // 800ms, 1100ms, 1400ms...
+        console.log(`[CallArea] Scheduling video play for ${remoteUserId} in ${initialDelay}ms`)
         
-        videoPlayTimersRef.current.set(remoteUserId, timer)
+        const timer = setTimeout(() => {
+          console.log(`[CallArea] Timer fired, attempting to play video for ${remoteUserId}`)
+          safePlayRemoteVideo(remoteUserId, `remote-video-${remoteUserId}`)
+        }, initialDelay)
+        
+        videoPlayTimersRef.current.set(`${remoteUserId}-init`, timer)
+      } else {
+        console.log(`[CallArea] No video track for ${remoteUserId}, skipping`)
       }
     })
 
     return () => {
+      console.log('[CallArea] Cleanup: clearing timers')
       videoPlayTimersRef.current.forEach(timer => clearTimeout(timer))
       videoPlayTimersRef.current.clear()
     }
@@ -123,29 +221,33 @@ export default function CallArea({
   // Expand/collapse handler - replay videos when expanding
   useEffect(() => {
     if (!collapsed) {
+      // Clear played tracks cache when expanding
+      playedTracksRef.current.clear()
+      
       // Wait for DOM to render
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          try {
-            if (localVideoTrack && localVideoRef.current) {
-              localVideoTrack.play(localVideoRef.current)
-            }
-            
-            participants.forEach((p) => {
-              if (p.user_id === localUserId) return
-              
-              const remoteUserId = `user_${p.user_id}`
-              const remoteUser = remoteUsers.get(remoteUserId)
-              
-              if (remoteUser?.videoTrack) {
-                safePlayRemoteVideo(remoteUserId, `remote-video-${remoteUserId}`)
-              }
-            })
-          } catch (err) {
-            console.error('Failed to play videos on expand:', err)
+      setTimeout(() => {
+        try {
+          if (localVideoTrack && localVideoRef.current) {
+            localVideoTrack.play(localVideoRef.current)
           }
-        })
-      })
+          
+          participants.forEach((p, index) => {
+            if (p.user_id === localUserId) return
+            
+            const remoteUserId = `user_${p.user_id}`
+            const remoteUser = remoteUsers.get(remoteUserId)
+            
+            if (remoteUser?.videoTrack) {
+              // Stagger playback
+              setTimeout(() => {
+                safePlayRemoteVideo(remoteUserId, `remote-video-${remoteUserId}`)
+              }, 200 * index)
+            }
+          })
+        } catch (err) {
+          console.error('Failed to play videos on expand:', err)
+        }
+      }, 500)
     }
   }, [collapsed])
 
@@ -260,29 +362,45 @@ export default function CallArea({
               </div>
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
                 <span className="rounded-md bg-black/50 px-2 py-0.5 text-xs text-white">我</span>
-                {hasMic !== false && (
-                  <div className="flex items-center gap-1">
-                    {muted ? (
-                      <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/80">
-                        <IconMicOff size={12} className="text-white" />
-                        <span className="text-[10px] text-white">静音中</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5">
-                        <IconMic size={12} className={audioLevel > 0.2 ? 'text-blue-400' : 'text-white/50'} />
-                        <div className="h-1 w-20 rounded-full bg-white/20 overflow-hidden">
-                          <div
-                            className="h-full rounded-full transition-all duration-200"
-                            style={{
-                              width: `${audioLevel < 0.1 ? 0 : Math.min(Math.pow((audioLevel - 0.1) / 0.4, 1.5) * 100, 100)}%`,
-                              background: audioLevel > 0.35 ? '#3b82f6' : audioLevel > 0.2 ? '#93c5fd' : '#94a3b8',
-                            }}
-                          />
+                <div className="flex items-center gap-1">
+                  {/* Publish status indicator */}
+                  {publishStats ? (
+                    <span className="rounded-md bg-green-500/80 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
+                      ● 推流中
+                    </span>
+                  ) : localVideoTrack ? (
+                    <span className="rounded-md bg-yellow-500/80 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
+                      ◐ 连接中
+                    </span>
+                  ) : (
+                    <span className="rounded-md bg-gray-500/80 px-1.5 py-0.5 text-[10px] text-white flex items-center gap-0.5">
+                      ○ 仅观看
+                    </span>
+                  )}
+                  {hasMic !== false && (
+                    <div className="flex items-center gap-1">
+                      {muted ? (
+                        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/80">
+                          <IconMicOff size={12} className="text-white" />
+                          <span className="text-[10px] text-white">静音中</span>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <IconMic size={12} className={audioLevel > 0.2 ? 'text-blue-400' : 'text-white/50'} />
+                          <div className="h-1 w-20 rounded-full bg-white/20 overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-200"
+                              style={{
+                                width: `${audioLevel < 0.1 ? 0 : Math.min(Math.pow((audioLevel - 0.1) / 0.4, 1.5) * 100, 100)}%`,
+                                background: audioLevel > 0.35 ? '#3b82f6' : audioLevel > 0.2 ? '#93c5fd' : '#94a3b8',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -291,7 +409,16 @@ export default function CallArea({
               .map((p) => {
                 const remoteUserId = `user_${p.user_id}`
                 const remoteUser = remoteUsers.get(remoteUserId)
-                const hasVideo = remoteUser?.videoTrack
+                // Use explicit check for videoTrack existence
+                const hasVideo = remoteUser && remoteUser.videoTrack != null && typeof remoteUser.videoTrack === 'object'
+
+                console.log(`[CallArea] Rendering user ${remoteUserId}:`, {
+                  hasRemoteUser: !!remoteUser,
+                  videoTrack: remoteUser?.videoTrack,
+                  videoTrackType: typeof remoteUser?.videoTrack,
+                  hasVideo,
+                  videoOff: remoteUser?.videoOff
+                })
 
                 return (
                   <div key={p.user_id} className="relative aspect-video rounded-xl overflow-hidden bg-slate-900">

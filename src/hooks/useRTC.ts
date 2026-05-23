@@ -125,13 +125,20 @@ export function useRTC(options: UseRTCOptions) {
     client.on('user-published', async (user: any, mediaType: 'audio' | 'video', auxiliary?: boolean) => {
       try {
         if (mediaType === 'video') {
-          await client.subscribe(user.userId, mediaType, auxiliary)
+          console.log('[RTC] Subscribing to video for user:', user.userId, 'auxiliary:', auxiliary)
+          const track = await client.subscribe(user.userId, mediaType, auxiliary)
+          console.log('[RTC] Subscribe result:', track, 'type:', typeof track, 'has play:', typeof track?.play)
+          
+          const videoTrack = track || (auxiliary ? user.auxiliaryTrack : user.videoTrack)
+          console.log('[RTC] Final videoTrack:', videoTrack, 'type:', typeof videoTrack)
+          
           setState((prev) => {
             const next = new Map(prev.remoteUsers)
             const existing = next.get(user.userId) || { audioTrack: null, videoTrack: null, audioMuted: false, videoOff: false }
-            existing.videoTrack = auxiliary ? user.auxiliaryTrack : user.videoTrack
+            existing.videoTrack = videoTrack
             existing.videoOff = false
             next.set(user.userId, existing)
+            console.log('[RTC] Updated remoteUsers for user:', user.userId, 'videoTrack:', videoTrack)
             return { ...prev, remoteUsers: next }
           })
         } else if (mediaType === 'audio') {
@@ -203,6 +210,68 @@ export function useRTC(options: UseRTCOptions) {
       userName: uid,
     })
 
+    console.log('[RTC] Join response:', response)
+    
+    // Process existing remote users who are already in the channel
+    if (response?.remoteUsers && Array.isArray(response.remoteUsers)) {
+      console.log('[RTC] Found existing remote users:', response.remoteUsers.length)
+      
+      for (const remoteUser of response.remoteUsers) {
+        console.log('[RTC] Processing existing user:', remoteUser.userId, 'has video:', !!remoteUser.videoTrack, 'has audio:', !!remoteUser.audioTrack)
+        
+        // Add user to state
+        setState((prev) => {
+          const next = new Map(prev.remoteUsers)
+          if (!next.has(remoteUser.userId)) {
+            next.set(remoteUser.userId, { 
+              audioTrack: remoteUser.audioTrack || null, 
+              videoTrack: remoteUser.videoTrack || null, 
+              audioMuted: !remoteUser.audioTrack, 
+              videoOff: !remoteUser.videoTrack 
+            })
+          }
+          return { ...prev, remoteUsers: next }
+        })
+        
+        // Trigger onUserJoined callback for existing users
+        options.onUserJoined?.(remoteUser.userId)
+        
+        // If user has video, try to subscribe
+        if (remoteUser.videoTrack) {
+          try {
+            console.log('[RTC] Subscribing to existing user video:', remoteUser.userId)
+            const track = await client.subscribe(remoteUser.userId, 'video')
+            console.log('[RTC] Subscribe result for existing user:', track)
+            
+            setState((prev) => {
+              const next = new Map(prev.remoteUsers)
+              const existing = next.get(remoteUser.userId)
+              if (existing) {
+                existing.videoTrack = track || remoteUser.videoTrack
+                existing.videoOff = false
+                next.set(remoteUser.userId, existing)
+              }
+              return { ...prev, remoteUsers: next }
+            })
+          } catch (err) {
+            console.error('[RTC] Failed to subscribe to existing user video:', err)
+          }
+        }
+        
+        // If user has audio, try to subscribe MCU
+        if (remoteUser.audioTrack && !mcuAudioSubscribed.current) {
+          mcuAudioSubscribed.current = true
+          try {
+            const audioTrack = await client.subscribe('mcu', 'audio')
+            audioTrack.play()
+          } catch (audioErr) {
+            console.error('Failed to subscribe MCU audio:', audioErr)
+            mcuAudioSubscribed.current = false
+          }
+        }
+      }
+    }
+
     setState((prev) => ({ ...prev, joined: true }))
     return response
   }, [options])
@@ -225,10 +294,10 @@ export function useRTC(options: UseRTCOptions) {
       tracks.push(micTrack)
       localAudioTrackRef.current = micTrack
       setState((prev) => ({ ...prev, localAudioTrack: micTrack }))
+      console.log('[RTC] Mic track created successfully')
     } catch (e: any) {
       console.error('Failed to create mic track:', e)
       micError = true
-      options.onError?.('麦克风未授权或不可用')
     }
 
     if (enableVideo) {
@@ -240,19 +309,30 @@ export function useRTC(options: UseRTCOptions) {
         tracks.push(cameraTrack)
         localVideoTrackRef.current = cameraTrack
         setState((prev) => ({ ...prev, localVideoTrack: cameraTrack }))
+        console.log('[RTC] Camera track created successfully')
       } catch (e: any) {
         console.error('Failed to create camera track:', e)
         cameraError = true
       }
     }
 
+    // Only publish if we have tracks (SDK doesn't allow publishing empty streams)
     if (tracks.length > 0) {
-      await client.publish(tracks)
-      setState((prev) => ({ ...prev, publishing: true }))
-      startAudioLevelMonitor()
+      try {
+        await client.publish(tracks)
+        setState((prev) => ({ ...prev, publishing: true }))
+        startAudioLevelMonitor()
+        console.log('[RTC] Published successfully, tracks:', tracks.length)
+      } catch (publishErr) {
+        console.error('[RTC] Failed to publish:', publishErr)
+        setState((prev) => ({ ...prev, publishing: false }))
+      }
+    } else {
+      console.log('[RTC] No tracks to publish (mic and camera both failed)')
+      setState((prev) => ({ ...prev, publishing: false }))
     }
 
-    return { micError, cameraError }
+    return { micError, cameraError, published: tracks.length > 0 }
   }, [options, startAudioLevelMonitor])
 
   const leave = useCallback(async () => {
@@ -338,16 +418,31 @@ export function useRTC(options: UseRTCOptions) {
     }
   }, [videoEnabled, videoToggling])
 
-  const playRemoteVideo = useCallback((userId: string, elementId: string) => {
+  const playRemoteVideo = useCallback((userId: string, elementOrId: string | HTMLElement) => {
     const user = state.remoteUsers.get(userId)
     if (user?.videoTrack) {
-      try {
-        user.videoTrack.play(elementId)
-      } catch (err) {
-        console.error('Failed to play remote video:', err)
-      }
+      console.log('[RTC] Playing remote video for userId:', userId, 'element type:', typeof elementOrId, 'is HTMLElement:', elementOrId instanceof HTMLElement)
+      user.videoTrack.play(elementOrId)
+      console.log('[RTC] Remote video play called successfully for userId:', userId)
+    } else {
+      console.log('[RTC] No video track found for userId:', userId, 'user:', user)
+      throw new Error('No video track found')
     }
   }, [state])
+
+  const getLocalStats = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) return null
+    
+    try {
+      const videoStats = await client.getLocalVideoStats()
+      const audioStats = await client.getLocalAudioStats()
+      return { video: videoStats, audio: audioStats }
+    } catch (err) {
+      console.error('[RTC] Failed to get local stats:', err)
+      return null
+    }
+  }, [])
 
   return {
     ...state,
@@ -364,5 +459,6 @@ export function useRTC(options: UseRTCOptions) {
     toggleVideo,
     playRemoteVideo,
     checkDevices,
+    getLocalStats,
   }
 }

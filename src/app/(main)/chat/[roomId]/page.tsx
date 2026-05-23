@@ -56,12 +56,14 @@ export default function RoomPage() {
   const [hasMore, setHasMore] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [shouldScrollToBottom, setShouldScrollToBottom] = useState(true)
+  const [publishStats, setPublishStats] = useState<any>(null)
   const shouldScrollRef = useRef(true)
   const loadingMoreRef = useRef(false)
   const hasMoreRef = useRef(true)
   const endRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const statsIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('access_token') : null
   const { toast } = useToast()
   const { socket, connected, joinRoom, leaveRoom, on } = useSocket(token)
@@ -82,7 +84,34 @@ export default function RoomPage() {
   const rtc = useRTC({
     appId: process.env.NEXT_PUBLIC_RTC_APP_ID || '',
     onUserPublished: (userId, mediaType) => {},
-    onUserLeft: (userId) => {},
+    onUserJoined: (userId) => {
+      // When a new user joins via RTC, add them to inCallUsers
+      const numericId = parseInt(userId.replace('user_', ''))
+      if (!isNaN(numericId) && numericId !== user?.id) {
+        setInCallUsers(prev => {
+          if (prev.has(numericId)) return prev
+          const next = new Map(prev)
+          // Try to find real nickname from room.members
+          const member = room?.members?.find((m: any) => m.user_id === numericId)
+          const nickname = member?.nickname || `用户${numericId}`
+          next.set(numericId, { nickname, joinedAt: Date.now() })
+          console.log('[Page] Added user to inCallUsers via onUserJoined:', numericId, nickname)
+          return next
+        })
+      }
+    },
+    onUserLeft: (userId) => {
+      // When a user leaves via RTC, remove them from inCallUsers
+      const numericId = parseInt(userId.replace('user_', ''))
+      if (!isNaN(numericId)) {
+        setInCallUsers(prev => {
+          const next = new Map(prev)
+          next.delete(numericId)
+          console.log('[Page] Removed user from inCallUsers via onUserLeft:', numericId)
+          return next
+        })
+      }
+    },
     onError: (error) => {
       console.error('RTC error:', error)
       toast('error', error)
@@ -102,6 +131,28 @@ export default function RoomPage() {
       })
     },
   })
+
+  // Sync remoteUsers with inCallUsers
+  useEffect(() => {
+    if (rtc.remoteUsers.size > 0) {
+      setInCallUsers(prev => {
+        const next = new Map(prev)
+        let changed = false
+        rtc.remoteUsers.forEach((remoteUser, userId) => {
+          const numericId = parseInt(userId.replace('user_', ''))
+          if (!isNaN(numericId) && !next.has(numericId)) {
+            // Try to find real nickname from room.members
+            const member = room?.members?.find((m: any) => m.user_id === numericId)
+            const nickname = member?.nickname || `用户${numericId}`
+            next.set(numericId, { nickname, joinedAt: Date.now() })
+            changed = true
+            console.log('[Page] Synced user from remoteUsers to inCallUsers:', numericId, nickname)
+          }
+        })
+        return changed ? next : prev
+      })
+    }
+  }, [rtc.remoteUsers, room?.members])
 
   const fetchRoom = useCallback(async () => {
     if (!token) return
@@ -203,8 +254,25 @@ export default function RoomPage() {
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (inCall) {
-        rtc.leave()
-        liveTranslate.stopCapture()
+        // Use fetch with keepalive for reliable delivery even when page is closing
+        const token = sessionStorage.getItem('access_token')
+        if (token) {
+          fetch(`/api/v1/rooms/${rid}/call/leave`, {
+            method: 'POST',
+            headers: { 
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            keepalive: true // This ensures the request is sent even when page is closing
+          }).catch(() => {}) // Ignore errors
+        }
+        // Also try to leave RTC (may not complete before page closes)
+        try {
+          rtc.leave()
+        } catch (e) {}
+        try {
+          liveTranslate.stopCapture()
+        } catch (e) {}
       }
     }
 
@@ -212,8 +280,8 @@ export default function RoomPage() {
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
       if (inCall) {
-        rtc.leave()
-        liveTranslate.stopCapture()
+        // Normal leave when component unmounts
+        leaveCall()
       }
     }
   }, [inCall])
@@ -504,12 +572,32 @@ export default function RoomPage() {
           setCallSid(d.data.call_session_id)
           setRtcReconnecting(false)
 
-          // Add self to inCallUsers
+          // Add self to inCallUsers first
           setInCallUsers(prev => {
             const next = new Map(prev)
             next.set(user.id, { nickname: user.nickname, joinedAt: Date.now() })
             return next
           })
+
+          // Fetch current call participants to see who's already in the call
+          try {
+            const activeRes = await fetch('/api/v1/rooms/' + rid + '/call/active', { headers: { Authorization: 'Bearer ' + token } })
+            const activeData = await activeRes.json()
+            if (activeData.success && activeData.data?.participants) {
+              setInCallUsers(prev => {
+                const next = new Map(prev)
+                // Add existing participants
+                for (const p of activeData.data.participants) {
+                  if (p.user_id !== user.id && !next.has(p.user_id)) {
+                    next.set(p.user_id, { nickname: p.nickname, joinedAt: Date.now() })
+                  }
+                }
+                return next
+              })
+            }
+          } catch (e) {
+            console.error('Failed to fetch active call participants:', e)
+          }
 
           // Join RTC channel
           try {
@@ -518,8 +606,25 @@ export default function RoomPage() {
             const rtcToken = d.data.rtc_token
 
             await rtc.join(channelId, uid, rtcToken)
-            await rtc.publish(true) // publish with video
-            toast('success', '已加入通话')
+            const publishResult = await rtc.publish(true) // publish with video
+            console.log('[Page] Publish result:', publishResult)
+            
+            if (publishResult.published) {
+              toast('success', '已加入通话')
+              // Start monitoring publish stats only if published successfully
+              if (statsIntervalRef.current) {
+                clearInterval(statsIntervalRef.current)
+              }
+              statsIntervalRef.current = setInterval(async () => {
+                const stats = await rtc.getLocalStats()
+                if (stats) {
+                  setPublishStats(stats)
+                }
+              }, 3000) // Update every 3 seconds
+            } else {
+              toast('warning', '已加入通话，但无法推流（摄像头/麦克风不可用）')
+              setPublishStats(null)
+            }
           } catch (rtcError) {
             console.error('RTC join failed:', rtcError)
             toast('warning', '已加入通话，但音视频连接失败')
@@ -547,6 +652,12 @@ export default function RoomPage() {
       // Stop live translate first
       liveTranslate.stopCapture()
       
+      // Stop stats monitoring
+      if (statsIntervalRef.current) {
+        clearInterval(statsIntervalRef.current)
+        statsIntervalRef.current = null
+      }
+      
       // Leave RTC
       await rtc.leave()
 
@@ -554,6 +665,7 @@ export default function RoomPage() {
       setInCall(false); setCallSid(null)
       setSubtitles(new Map())
       setInCallUsers(new Map())
+      setPublishStats(null)
       toast('success', '已退出通话')
     } finally { setLeavingCall(false) }
   }
@@ -694,6 +806,7 @@ export default function RoomPage() {
           liveTranslateEnabled={liveTranslate.enabled}
           liveTranslateLoading={liveTranslate.isTranslating}
           onToggleLiveTranslate={liveTranslate.toggle}
+          publishStats={publishStats}
         />
       )}
 
